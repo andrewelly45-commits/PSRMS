@@ -11,20 +11,15 @@ function navActive($page, $current) {
 }
 ?>
 
-<aside class="sidebar" id="adminSidebar">
+<aside class="sidebar admin-sidebar" id="adminSidebar">
 
     <!-- BRAND -->
     <div class="sidebar-brand">
-
-        <div class="brand-mark">
-            PS
-        </div>
-
+        <div class="brand-mark">PS</div>
         <div class="brand-text">
             <strong>PSRMS</strong>
             <span>School Management</span>
         </div>
-
     </div>
 
 
@@ -81,12 +76,6 @@ function navActive($page, $current) {
             <span>Academic Years</span>
         </a>
 
-        <a href="attendance.php"
-           class="nav-item <?php echo navActive('attendance.php', $current_page); ?>">
-            <span class="nav-icon">A</span>
-            <span>Attendance</span>
-        </a>
-
         <a href="results.php"
            class="nav-item <?php echo navActive('results.php', $current_page); ?>">
             <span class="nav-icon">R</span>
@@ -102,10 +91,10 @@ function navActive($page, $current) {
 
         <div class="nav-section">System</div>
 
-        <a href="announcements.php"
-           class="nav-item <?php echo navActive('announcements.php', $current_page); ?>">
+        <a href="news.php"
+           class="nav-item <?php echo navActive('news.php', $current_page); ?>">
             <span class="nav-icon">N</span>
-            <span>Announcements</span>
+            <span>News</span>
         </a>
 
         <a href="gallery.php"
@@ -120,32 +109,20 @@ function navActive($page, $current) {
             <span>System History</span>
         </a>
 
-        <a href="settings.php"
-           class="nav-item <?php echo navActive('settings.php', $current_page); ?>">
+        <a href="events.php"
+           class="nav-item <?php echo navActive('events.php', $current_page); ?>">
             <span class="nav-icon">⚙</span>
-            <span>Settings</span>
+            <span>Events</span>
         </a>
 
     </nav>
-
-
-    <!-- LOGOUT -->
-    <div class="sidebar-bottom">
-
-        <a href="../auth/logout.php" class="logout-item">
-            <span class="nav-icon">↪</span>
-            <span>Logout</span>
-        </a>
-
-    </div>
 
 </aside>
 
 
 <style>
-
     /* =========================================================
-       SIDEBAR BASE
+       SIDEBAR — BASE
     ========================================================= */
     .sidebar {
         --sb-bg:            #0f172a;
@@ -163,7 +140,7 @@ function navActive($page, $current) {
         top: 0;
         left: 0;
         bottom: 0;
-        z-index: 1000;
+        z-index: 1080;
 
         display: flex;
         flex-direction: column;
@@ -179,13 +156,11 @@ function navActive($page, $current) {
         font-size: 14px;
 
         -webkit-overflow-scrolling: touch;
-        transition: width .25s ease;
+        transition: transform .28s cubic-bezier(.4, 0, .2, 1),
+                    width .25s ease;
     }
 
-    .sidebar a {
-        text-decoration: none;
-    }
-
+    .sidebar a,
     .sidebar a:hover,
     .sidebar a:focus,
     .sidebar a:active,
@@ -259,6 +234,7 @@ function navActive($page, $current) {
         padding: 16px 12px 20px;
         scrollbar-width: thin;
         scrollbar-color: rgba(255,255,255,0.1) transparent;
+        -webkit-overflow-scrolling: touch;
     }
 
     /* =========================================================
@@ -274,9 +250,7 @@ function navActive($page, $current) {
         user-select: none;
     }
 
-    .nav-section:first-child {
-        padding-top: 6px;
-    }
+    .nav-section:first-child { padding-top: 6px; }
 
     /* =========================================================
        NAV ITEMS
@@ -326,10 +300,8 @@ function navActive($page, $current) {
         left: -12px;
         top: 50%;
         transform: translateY(-50%);
-
         width: 3px;
         height: 22px;
-
         background: var(--sb-accent);
         border-radius: 0 3px 3px 0;
     }
@@ -354,13 +326,9 @@ function navActive($page, $current) {
     }
 
     .nav-item:hover .nav-icon,
-    .logout-item:hover .nav-icon {
-        color: var(--sb-text-strong);
-    }
+    .logout-item:hover .nav-icon { color: var(--sb-text-strong); }
 
-    .nav-item.active .nav-icon {
-        color: var(--sb-accent);
-    }
+    .nav-item.active .nav-icon { color: var(--sb-accent); }
 
     /* =========================================================
        BOTTOM / LOGOUT
@@ -372,25 +340,19 @@ function navActive($page, $current) {
         background: var(--sb-bg-soft);
     }
 
-    .logout-item {
-        color: var(--sb-text);
-    }
+    .logout-item { color: var(--sb-text); }
 
     .logout-item:hover {
         background: rgba(248, 113, 113, 0.1);
         color: var(--sb-danger);
     }
 
-    .logout-item:hover .nav-icon {
-        color: var(--sb-danger);
-    }
+    .logout-item:hover .nav-icon { color: var(--sb-danger); }
 
     /* =========================================================
-       COLLAPSED (desktop) — if you add a toggle later
+       COLLAPSED (desktop)
     ========================================================= */
-    .sidebar.is-collapsed {
-        width: 72px;
-    }
+    .sidebar.is-collapsed { width: 72px; }
 
     .sidebar.is-collapsed .brand-text,
     .sidebar.is-collapsed .nav-section,
@@ -405,28 +367,36 @@ function navActive($page, $current) {
         padding: 0;
     }
 
-    .sidebar.is-collapsed .nav-item.active::before {
-        left: -12px;
-    }
-
     /* =========================================================
-       SCROLLBAR (desktop)
+       SCROLLBAR
     ========================================================= */
-    .sidebar-nav::-webkit-scrollbar {
-        width: 6px;
-    }
-
-    .sidebar-nav::-webkit-scrollbar-track {
-        background: transparent;
-    }
-
+    .sidebar-nav::-webkit-scrollbar { width: 6px; }
+    .sidebar-nav::-webkit-scrollbar-track { background: transparent; }
     .sidebar-nav::-webkit-scrollbar-thumb {
         background: rgba(255, 255, 255, .08);
         border-radius: 3px;
     }
-
     .sidebar-nav::-webkit-scrollbar-thumb:hover {
         background: rgba(255, 255, 255, .15);
+    }
+
+    /* =========================================================
+       OVERLAY (mobile) — dim the page behind the drawer
+    ========================================================= */
+    .sidebar-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, .45);
+        z-index: 1070;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity .25s ease;
+    }
+
+    .sidebar-overlay.open,
+    body.sidebar-mobile-open .sidebar-overlay {
+        opacity: 1;
+        pointer-events: auto;
     }
 
     /* =========================================================
@@ -438,11 +408,12 @@ function navActive($page, $current) {
             width: 280px;
             max-width: 85vw;
             transform: translateX(-100%);
-            transition: transform .28s cubic-bezier(.4, 0, .2, 1);
             box-shadow: 5px 0 25px rgba(0, 0, 0, .25);
             will-change: transform;
         }
 
+        /* Both class conventions are supported */
+        .sidebar.open,
         body.sidebar-mobile-open .sidebar {
             transform: translateX(0);
         }
@@ -465,22 +436,18 @@ function navActive($page, $current) {
         }
     }
 
+    /* Overlay is only needed on mobile */
+    @media (min-width: 801px) {
+        .sidebar-overlay { display: none; }
+    }
+
     /* =========================================================
        SMALL PHONES
     ========================================================= */
     @media (max-width: 480px) {
-
-        .sidebar {
-            width: 260px;
-        }
-
-        .sidebar-brand {
-            padding: 0 18px;
-        }
-
-        .sidebar-nav {
-            padding: 14px 10px;
-        }
+        .sidebar { width: 260px; }
+        .sidebar-brand { padding: 0 18px; }
+        .sidebar-nav { padding: 14px 10px; }
 
         .nav-item,
         .logout-item {
@@ -490,141 +457,14 @@ function navActive($page, $current) {
     }
 
     /* =========================================================
-       LANDSCAPE PHONES — keep the drawer usable
+       LANDSCAPE PHONES
     ========================================================= */
     @media (max-height: 500px) and (max-width: 900px) {
-
-        .sidebar-brand {
-            height: 60px;
-        }
+        .sidebar-brand { height: 60px; }
 
         .nav-item,
-        .logout-item {
-            min-height: 40px;
-        }
+        .logout-item { min-height: 40px; }
 
-        .nav-section {
-            padding: 8px 12px 4px;
-        }
-    }
-
-    /* =========================================================
-       SIDEBAR BASE
-    ========================================================= */
-    .sidebar a {
-        text-decoration: none;
-    }
-
-    .sidebar a:hover,
-    .sidebar a:focus,
-    .sidebar a:active,
-    .sidebar a:visited {
-        text-decoration: none;
-    }
-
-    /* Prevent the sidebar itself from scrolling the page */
-    .sidebar {
-        -webkit-overflow-scrolling: touch;
-    }
-
-    /* =========================================================
-       SCROLLBAR (desktop)
-    ========================================================= */
-    .sidebar-nav::-webkit-scrollbar {
-        width: 6px;
-    }
-
-    .sidebar-nav::-webkit-scrollbar-track {
-        background: transparent;
-    }
-
-    .sidebar-nav::-webkit-scrollbar-thumb {
-        background: rgba(255, 255, 255, .08);
-        border-radius: 3px;
-    }
-
-    .sidebar-nav::-webkit-scrollbar-thumb:hover {
-        background: rgba(255, 255, 255, .15);
-    }
-
-    /* =========================================================
-       MOBILE — drawer behaviour
-    ========================================================= */
-    @media (max-width: 800px) {
-
-        .sidebar {
-            width: 280px;
-            max-width: 85vw;
-            transform: translateX(-100%);
-            transition: transform .28s cubic-bezier(.4, 0, .2, 1);
-            box-shadow: 5px 0 25px rgba(0, 0, 0, .25);
-            will-change: transform;
-        }
-
-        body.sidebar-mobile-open .sidebar {
-            transform: translateX(0);
-        }
-
-        /* Respect iPhone home bar */
-        @supports (padding: max(0px)) {
-            .sidebar-bottom {
-                padding-bottom: max(14px, env(safe-area-inset-bottom));
-            }
-        }
-
-        /* Bigger touch targets */
-        .nav-item,
-        .logout-item {
-            min-height: 46px;
-            font-size: 13.5px;
-        }
-
-        .nav-section {
-            padding-top: 16px;
-            padding-bottom: 10px;
-        }
-    }
-
-    /* =========================================================
-       SMALL PHONES
-    ========================================================= */
-    @media (max-width: 480px) {
-
-        .sidebar {
-            width: 260px;
-        }
-
-        .sidebar-brand {
-            padding: 0 18px;
-        }
-
-        .sidebar-nav {
-            padding: 14px 10px;
-        }
-
-        .nav-item,
-        .logout-item {
-            padding: 0 10px;
-            gap: 10px;
-        }
-    }
-
-    /* =========================================================
-       LANDSCAPE PHONES — keep the drawer usable
-    ========================================================= */
-    @media (max-height: 500px) and (max-width: 900px) {
-
-        .sidebar-brand {
-            height: 60px;
-        }
-
-        .nav-item,
-        .logout-item {
-            min-height: 40px;
-        }
-
-        .nav-section {
-            padding: 8px 12px 4px;
-        }
+        .nav-section { padding: 8px 12px 4px; }
     }
 </style>

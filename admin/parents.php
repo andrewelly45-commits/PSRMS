@@ -5,6 +5,9 @@ requireRole('admin');
 
 require_once '../includes/db.php';
 
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
 /*
 |--------------------------------------------------------------------------
 | Search & Filters
@@ -23,7 +26,7 @@ $status = $_GET['status'] ?? '';
 $students = [];
 $res = mysqli_query(
     $conn,
-    "SELECT student_id, full_name, registration_no, class_id
+    "SELECT student_id, full_name, class_id
      FROM students
      WHERE status = 'active'
      ORDER BY full_name ASC"
@@ -210,7 +213,7 @@ $has_filters = ($search !== '' || $status !== '');
             --topbar-h: 78px;
         }
 
-        html, body { -webkit-text-size-adjust: 100%; }
+        html, body { -webkit-text-size-adjust: 100%; overflow-x: hidden; }
 
         body {
             font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
@@ -218,8 +221,67 @@ $has_filters = ($search !== '' || $status !== '');
             color: var(--text);
             min-height: 100vh;
             min-height: 100dvh;
-            overflow-x: hidden;
         }
+
+        body.no-scroll { overflow: hidden; }
+
+        /* =========================================================
+           MOBILE TOPBAR
+        ========================================================= */
+        .mobile-topbar {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 58px;
+            background: var(--navy);
+            color: var(--white);
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            z-index: 1100;
+            box-shadow: 0 2px 8px rgba(0,0,0,.15);
+        }
+
+        .mobile-topbar .brand { font-size: 14px; font-weight: 800; letter-spacing: .5px; }
+        .mobile-topbar .brand span { color: var(--gold-light); }
+
+        .hamburger {
+            width: 40px; height: 40px;
+            border: none;
+            background: rgba(255,255,255,.08);
+            border-radius: 6px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .hamburger span {
+            display: block;
+            width: 18px; height: 2px;
+            background: var(--white);
+            border-radius: 2px;
+            transition: .2s ease;
+        }
+
+        .hamburger.active span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+        .hamburger.active span:nth-child(2) { opacity: 0; }
+        .hamburger.active span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,.45);
+            z-index: 1050;
+            opacity: 0;
+            transition: opacity .25s ease;
+        }
+
+        .sidebar-overlay.open { display: block; opacity: 1; }
 
         /* =================================================
            MAIN CONTENT
@@ -1246,13 +1308,14 @@ $has_filters = ($search !== '' || $status !== '');
 
         @media (max-width: 800px) {
 
+            .mobile-topbar { display: flex; }
+
             .main-content {
                 margin-left: 0;
-                padding: calc(var(--topbar-h) + 20px) 16px 30px;
+                padding: 78px 16px 30px;
             }
 
             body.sidebar-collapsed .main-content { margin-left: 0; }
-            body.sidebar-collapsed .topbar        { left: 0; }
 
             .page-header {
                 align-items: stretch;
@@ -1393,7 +1456,7 @@ $has_filters = ($search !== '' || $status !== '');
             :root { --topbar-h: 66px; }
 
             .main-content {
-                padding: calc(var(--topbar-h) + 16px) 14px 24px;
+                padding: 74px 14px 24px;
             }
 
             .page-heading h1 { font-size: 19px; }
@@ -1462,14 +1525,28 @@ $has_filters = ($search !== '' || $status !== '');
         }
 
         @media (max-height: 500px) and (max-width: 900px) {
-            .main-content { padding-top: calc(var(--topbar-h) + 12px); }
+            .main-content { padding-top: 74px; }
             .stats-grid   { margin-bottom: 12px; }
         }
     </style>
 </head>
 <body>
 
-<?php include 'admin_header.php'; ?>
+<!-- MOBILE TOPBAR -->
+<div class="mobile-topbar">
+    <div class="brand">PSRMS <span>Admin</span></div>
+    <button type="button" class="hamburger" id="hamburgerBtn" aria-label="Menu">
+        <span></span><span></span><span></span>
+    </button>
+</div>
+
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+<?php
+$topbar_title    = 'Parents';
+$topbar_subtitle = '';
+include '../includes/topbar.php';
+?>
 <?php include 'admin_sidebar.php'; ?>
 
 <main class="main-content">
@@ -1985,7 +2062,46 @@ document.querySelectorAll('.modal-backdrop').forEach(bd => {
 document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
         document.querySelectorAll('.modal-backdrop.open').forEach(bd => bd.classList.remove('open'));
+        closeSidebar();
     }
+});
+
+/* =========================================================
+   MOBILE DRAWER SIDEBAR
+========================================================= */
+const hamburgerBtn   = document.getElementById('hamburgerBtn');
+const sidebarOverlay = document.getElementById('sidebarOverlay');
+
+function openSidebar() {
+    document.body.classList.add('no-scroll');
+    sidebarOverlay.classList.add('open');
+    const sidebar = document.querySelector('.admin-sidebar, #sidebar, .sidebar, #adminSidebar');
+    if (sidebar) sidebar.classList.add('open');
+    if (hamburgerBtn) hamburgerBtn.classList.add('active');
+}
+
+function closeSidebar() {
+    sidebarOverlay.classList.remove('open');
+    const sidebar = document.querySelector('.admin-sidebar, #sidebar, .sidebar, #adminSidebar');
+    if (sidebar) sidebar.classList.remove('open');
+    if (hamburgerBtn) hamburgerBtn.classList.remove('active');
+    if (!document.querySelector('.modal-backdrop.open')) {
+        document.body.classList.remove('no-scroll');
+    }
+}
+
+if (hamburgerBtn) {
+    hamburgerBtn.addEventListener('click', () => {
+        sidebarOverlay.classList.contains('open') ? closeSidebar() : openSidebar();
+    });
+}
+
+if (sidebarOverlay) {
+    sidebarOverlay.addEventListener('click', closeSidebar);
+}
+
+window.addEventListener('resize', () => {
+    if (window.innerWidth > 800) closeSidebar();
 });
 
 /* =========================================================
@@ -2024,6 +2140,13 @@ const noLinkHint = document.getElementById('noLinksHint');
 const addLinkBtn = document.getElementById('addLinkBtn');
 
 const RELATIONSHIPS = ['Father', 'Mother', 'Guardian', 'Other'];
+
+function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+}
+const escapeAttr = escapeHtml;
 
 function studentOptions(selectedId) {
     let html = '<option value="">— Select student —</option>';
@@ -2069,7 +2192,6 @@ function createLinkRow(data = {}) {
         <button type="button" class="link-remove" title="Remove link">✕</button>
     `;
 
-    // Toggle "on" class for primary
     const primaryInput = row.querySelector('.link-primary');
     const primaryLabel = row.querySelector('.primary-toggle');
     primaryInput.addEventListener('change', () => {
@@ -2088,7 +2210,6 @@ function createLinkRow(data = {}) {
 }
 
 function enforceSinglePrimary(activeRow) {
-    // Only one primary allowed across all link rows
     document.querySelectorAll('.link-row').forEach(r => {
         if (r !== activeRow) {
             const cb = r.querySelector('.link-primary');
@@ -2113,7 +2234,7 @@ function collectLinks() {
         const relationship = row.querySelector('.link-relationship').value;
         const is_primary  = row.querySelector('.link-primary').checked ? 1 : 0;
 
-        if (!student_id) return; // skip empty rows
+        if (!student_id) return;
 
         links.push({
             student_id: parseInt(student_id, 10),
@@ -2129,11 +2250,9 @@ addLinkBtn.addEventListener('click', () => createLinkRow());
 /* =========================================================
    ADD / EDIT
 ========================================================= */
-const parentModal   = document.getElementById('parentModal');
 const parentForm    = document.getElementById('parentForm');
 const saveBtn       = document.getElementById('saveParentBtn');
 const modalTitle    = document.getElementById('parentModalTitle');
-const passwordGrp   = document.getElementById('passwordGroup');
 const passwordReq   = document.getElementById('passwordReq');
 const passwordInput = document.getElementById('password');
 
@@ -2192,7 +2311,6 @@ function openEditModal(data) {
     document.getElementById('address').value     = data.address     || '';
     document.getElementById('status').value      = data.status      || 'active';
 
-    // Render existing links
     if (Array.isArray(data.links)) {
         data.links.forEach(l => {
             createLinkRow({
@@ -2364,13 +2482,6 @@ confirmDeleteBtn.addEventListener('click', async () => {
 /* =========================================================
    DOM UPDATERS
 ========================================================= */
-function escapeHtml(s) {
-    return String(s ?? '').replace(/[&<>"']/g, c => ({
-        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-    }[c]));
-}
-const escapeAttr = escapeHtml;
-
 function initials(first, last, fallback = '') {
     const a = (first || fallback || '').trim().charAt(0);
     const b = (last  || '').trim().charAt(0);

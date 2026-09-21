@@ -11,31 +11,31 @@ ini_set('display_errors', 1);
 */
 
 $school = [
-    'school_name'  => 'Primary School',
-    'school_code'  => '',
-    'address'      => '',
-    'phone'        => '',
-    'email'        => '',
-    'logo'         => '',
-    'head_teacher' => ''
+    'school_name' => 'Primary School',
+    'address'     => '',
+    'phone'       => '',
+    'phone1'      => '',
+    'phone2'      => '',
+    'email'       => '',
+    'logo'        => '',
 ];
 
 $query = "
     SELECT
         setting_id,
         school_name,
-        school_code,
         address,
         phone,
+        phone1,
+        phone2,
         email,
-        logo,
-        head_teacher
+        logo
     FROM school_settings
     ORDER BY setting_id ASC
     LIMIT 1
 ";
 
-$result = mysqli_query($conn, $query);
+$result = @mysqli_query($conn, $query);
 
 if ($result && mysqli_num_rows($result) > 0) {
     $school = mysqli_fetch_assoc($result);
@@ -47,12 +47,12 @@ if ($result && mysqli_num_rows($result) > 0) {
 |--------------------------------------------------------------------------
 */
 
-$school_name  = htmlspecialchars($school['school_name'] ?? 'Primary School');
-$school_code  = htmlspecialchars($school['school_code'] ?? '');
-$address      = htmlspecialchars($school['address'] ?? '');
-$phone        = htmlspecialchars($school['phone'] ?? '');
-$email        = htmlspecialchars($school['email'] ?? '');
-$head_teacher = htmlspecialchars($school['head_teacher'] ?? '');
+$school_name = htmlspecialchars($school['school_name'] ?? 'Primary School');
+$address     = htmlspecialchars($school['address']     ?? '');
+$phone       = htmlspecialchars($school['phone']       ?? '');
+$phone1      = htmlspecialchars($school['phone1']      ?? '');
+$phone2      = htmlspecialchars($school['phone2']      ?? '');
+$email       = htmlspecialchars($school['email']       ?? '');
 
 /*
 |--------------------------------------------------------------------------
@@ -69,15 +69,13 @@ if (!empty($school['logo'])) {
 |--------------------------------------------------------------------------
 | FETCH STATISTICS (optional)
 |--------------------------------------------------------------------------
-| Expects a table `school_stats` with columns: label, value
-| Falls back to sensible defaults if table is missing.
 */
 
 $stats = [
-    ['label' => 'Students Enrolled', 'value' => '0'],
-    ['label' => 'Exam Pass Rate',    'value' => '0'],
+    ['label' => 'Students Enrolled',  'value' => '0'],
+    ['label' => 'Exam Pass Rate',     'value' => '0'],
     ['label' => 'Years of Excellence','value' => '0'],
-    ['label' => 'Expert Educators',  'value' => '0'],
+    ['label' => 'Expert Educators',   'value' => '0'],
 ];
 
 $statsQuery = "SELECT label, value FROM school_stats ORDER BY id ASC LIMIT 4";
@@ -97,7 +95,6 @@ if ($statsResult && mysqli_num_rows($statsResult) > 0) {
 |--------------------------------------------------------------------------
 | FETCH NEWS (optional)
 |--------------------------------------------------------------------------
-| Expects table `news` with columns: id, title, category, news_date, excerpt
 */
 
 $news = [];
@@ -125,7 +122,6 @@ if ($newsResult && mysqli_num_rows($newsResult) > 0) {
 |--------------------------------------------------------------------------
 | FETCH EVENTS (optional)
 |--------------------------------------------------------------------------
-| Expects table `events` with columns: id, title, event_date, event_time, location, description
 */
 
 $events = [];
@@ -155,8 +151,6 @@ if ($eventsResult && mysqli_num_rows($eventsResult) > 0) {
 |--------------------------------------------------------------------------
 | FETCH INSTITUTIONS / SCHOOL LEVELS (optional)
 |--------------------------------------------------------------------------
-| Expects table `institutions` with columns: id, name, description, link
-| Falls back to fixed KG–Std 7 list.
 */
 
 $institutions = [];
@@ -191,7 +185,9 @@ if (empty($institutions)) {
 
 
 /*
+|--------------------------------------------------------------------------
 | FETCH GALLERY (KUMBUKUMBU)
+|--------------------------------------------------------------------------
 */
 
 $gallery = [];
@@ -210,13 +206,13 @@ if ($galleryResult && mysqli_num_rows($galleryResult) > 0) {
         $cat = strtolower(trim($row['category'] ?? 'general'));
 
         $gallery[] = [
-            'id'          => (int) $row['id'],
-            'title'       => htmlspecialchars($row['title']),
-            'category'    => htmlspecialchars($cat),
-            'image'       => htmlspecialchars($row['image']),
-            'description' => htmlspecialchars($row['description'] ?? ''),
-            'taken_on'    => htmlspecialchars($row['taken_on'] ?? ''),
-        ];
+          'id'          => (int) $row['id'],
+          'title'       => htmlspecialchars($row['title']),
+          'category'    => htmlspecialchars($cat),
+          'image'       => 'uploads/gallery/' . htmlspecialchars($row['image']),
+          'description' => htmlspecialchars($row['description'] ?? ''),
+          'taken_on'    => htmlspecialchars($row['taken_on'] ?? ''),
+        ]; 
 
         $galleryCategories[$cat] = true;
     }
@@ -228,7 +224,7 @@ sort($galleryCategories);
 
 /*
 |--------------------------------------------------------------------------
-| HERO BACKGROUND (replace with your own image path)
+| HERO BACKGROUND
 |--------------------------------------------------------------------------
 */
 $heroBg = 'assets/images/school-background.jpg';
@@ -290,10 +286,10 @@ $heroBg = 'assets/images/school-background.jpg';
         .brand { display: flex; align-items: center; gap: 13px; }
 
         .brand-logo {
-            width: 48px; height: 48px;
-            border-radius: 10px;
+            width: 70px; height: 70px;
+            border-radius: 12px;
             overflow: hidden;
-            background: var(--navy);
+            background: transparent;
             display: flex; align-items: center; justify-content: center;
             flex-shrink: 0;
         }
@@ -329,258 +325,195 @@ $heroBg = 'assets/images/school-background.jpg';
             width: 26px; height: 3px; background: var(--navy); border-radius: 2px;
         }
 
+        /* =========================================================
+           GALLERY (KUMBUKUMBU)
+        ========================================================= */
+        .gallery { background: var(--white); }
+
+        .gallery-filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 35px;
+        }
+
+        .filter-btn {
+            padding: 8px 18px;
+            border: 1px solid var(--border);
+            background: var(--white);
+            border-radius: 30px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text);
+            cursor: pointer;
+            transition: .25s ease;
+            text-transform: capitalize;
+            font-family: inherit;
+        }
+
+        .filter-btn:hover { border-color: var(--gold); color: var(--gold); }
+
+        .filter-btn.active {
+            background: var(--navy);
+            color: var(--white);
+            border-color: var(--navy);
+        }
+
+        .gallery-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
+        }
+
+        .gallery-item {
+            position: relative;
+            aspect-ratio: 1 / 1;
+            overflow: hidden;
+            border-radius: 10px;
+            cursor: pointer;
+            background: var(--cream);
+            transition: .3s ease;
+        }
+
+        .gallery-item:nth-child(6n + 1) {
+            grid-column: span 2;
+            grid-row: span 2;
+            aspect-ratio: 1 / 1;
+        }
+
+        .gallery-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform .5s ease;
+        }
+
+        .gallery-item:hover img { transform: scale(1.08); }
+
+        .gallery-overlay {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(
+                to top,
+                rgba(12, 20, 37, .88) 0%,
+                rgba(12, 20, 37, .3) 55%,
+                transparent 100%
+            );
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            padding: 18px;
+            opacity: 0;
+            transition: opacity .3s ease;
+        }
+
+        .gallery-item:hover .gallery-overlay { opacity: 1; }
+
+        .gallery-overlay h4 {
+            color: var(--white);
+            font-size: 15px;
+            margin-bottom: 4px;
+            line-height: 1.3;
+        }
+
+        .gallery-overlay span {
+            color: var(--gold-light);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1.3px;
+            font-weight: 700;
+        }
+
+        .gallery-zoom {
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            background: rgba(255,255,255,.9);
+            color: var(--navy);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 15px;
+            font-weight: 800;
+            opacity: 0;
+            transform: scale(.7);
+            transition: .3s ease;
+        }
+
+        .gallery-item:hover .gallery-zoom { opacity: 1; transform: scale(1); }
 
         /* =========================================================
-   GALLERY (KUMBUKUMBU)
-========================================================= */
-.gallery { background: var(--white); }
+           LIGHTBOX
+        ========================================================= */
+        .lightbox {
+            position: fixed;
+            inset: 0;
+            background: rgba(8, 12, 22, .95);
+            z-index: 2000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 20px;
+            opacity: 0;
+            transition: opacity .25s ease;
+            backdrop-filter: blur(6px);
+        }
 
-.gallery-filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin-bottom: 35px;
-}
+        .lightbox.open { display: flex; opacity: 1; }
 
-.filter-btn {
-    padding: 8px 18px;
-    border: 1px solid var(--border);
-    background: var(--white);
-    border-radius: 30px;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text);
-    cursor: pointer;
-    transition: .25s ease;
-    text-transform: capitalize;
-}
+        .lightbox-inner {
+            max-width: 1000px;
+            width: 100%;
+            position: relative;
+            text-align: center;
+        }
 
-.filter-btn:hover {
-    border-color: var(--gold);
-    color: var(--gold);
-}
+        .lightbox img {
+            max-width: 100%;
+            max-height: 78vh;
+            border-radius: 10px;
+            box-shadow: 0 25px 60px rgba(0,0,0,.5);
+            margin: 0 auto;
+        }
 
-.filter-btn.active {
-    background: var(--navy);
-    color: var(--white);
-    border-color: var(--navy);
-}
+        .lightbox-caption { margin-top: 18px; color: var(--white); }
+        .lightbox-caption h3 { font-size: 18px; margin-bottom: 5px; }
+        .lightbox-caption p  { color: #b6bfcf; font-size: 13.5px; }
 
-.gallery-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 14px;
-}
+        .lightbox-close,
+        .lightbox-prev,
+        .lightbox-next {
+            position: absolute;
+            background: rgba(255,255,255,.12);
+            border: 1px solid rgba(255,255,255,.2);
+            color: var(--white);
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: .25s ease;
+            z-index: 2;
+            font-family: inherit;
+        }
 
-.gallery-item {
-    position: relative;
-    aspect-ratio: 1 / 1;
-    overflow: hidden;
-    border-radius: 10px;
-    cursor: pointer;
-    background: var(--cream);
-    transition: .3s ease;
-}
+        .lightbox-close:hover,
+        .lightbox-prev:hover,
+        .lightbox-next:hover {
+            background: var(--gold);
+            color: var(--navy-dark);
+            border-color: var(--gold);
+        }
 
-.gallery-item:nth-child(6n + 1) {
-    grid-column: span 2;
-    grid-row: span 2;
-    aspect-ratio: 1 / 1;
-}
-
-.gallery-item img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    transition: transform .5s ease;
-}
-
-.gallery-item:hover img {
-    transform: scale(1.08);
-}
-
-.gallery-overlay {
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(
-        to top,
-        rgba(12, 20, 37, .88) 0%,
-        rgba(12, 20, 37, .3) 55%,
-        transparent 100%
-    );
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-    padding: 18px;
-    opacity: 0;
-    transition: opacity .3s ease;
-}
-
-.gallery-item:hover .gallery-overlay { opacity: 1; }
-
-.gallery-overlay h4 {
-    color: var(--white);
-    font-size: 15px;
-    margin-bottom: 4px;
-    line-height: 1.3;
-}
-
-.gallery-overlay span {
-    color: var(--gold-light);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 1.3px;
-    font-weight: 700;
-}
-
-.gallery-zoom {
-    position: absolute;
-    top: 14px;
-    right: 14px;
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    background: rgba(255,255,255,.9);
-    color: var(--navy);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 15px;
-    font-weight: 800;
-    opacity: 0;
-    transform: scale(.7);
-    transition: .3s ease;
-}
-
-.gallery-item:hover .gallery-zoom {
-    opacity: 1;
-    transform: scale(1);
-}
-
-/* =========================================================
-   LIGHTBOX
-========================================================= */
-.lightbox {
-    position: fixed;
-    inset: 0;
-    background: rgba(8, 12, 22, .95);
-    z-index: 2000;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    padding: 40px 20px;
-    opacity: 0;
-    transition: opacity .25s ease;
-    backdrop-filter: blur(6px);
-}
-
-.lightbox.open {
-    display: flex;
-    opacity: 1;
-}
-
-.lightbox-inner {
-    max-width: 1000px;
-    width: 100%;
-    position: relative;
-    text-align: center;
-}
-
-.lightbox img {
-    max-width: 100%;
-    max-height: 78vh;
-    border-radius: 10px;
-    box-shadow: 0 25px 60px rgba(0,0,0,.5);
-    margin: 0 auto;
-}
-
-.lightbox-caption {
-    margin-top: 18px;
-    color: var(--white);
-}
-
-.lightbox-caption h3 {
-    font-size: 18px;
-    margin-bottom: 5px;
-}
-
-.lightbox-caption p {
-    color: #b6bfcf;
-    font-size: 13.5px;
-}
-
-.lightbox-close,
-.lightbox-prev,
-.lightbox-next {
-    position: absolute;
-    background: rgba(255,255,255,.12);
-    border: 1px solid rgba(255,255,255,.2);
-    color: var(--white);
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    cursor: pointer;
-    font-size: 18px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: .25s ease;
-    z-index: 2;
-}
-
-.lightbox-close:hover,
-.lightbox-prev:hover,
-.lightbox-next:hover {
-    background: var(--gold);
-    color: var(--navy-dark);
-    border-color: var(--gold);
-}
-
-.lightbox-close { top: -55px; right: 0; }
-.lightbox-prev  { left: -60px; top: 50%; transform: translateY(-50%); }
-.lightbox-next  { right: -60px; top: 50%; transform: translateY(-50%); }
-
-/* =========================================================
-   GALLERY RESPONSIVE
-========================================================= */
-@media (max-width: 992px) {
-    .gallery-grid { grid-template-columns: repeat(3, 1fr); }
-    .gallery-item:nth-child(6n + 1) {
-        grid-column: span 2;
-        grid-row: span 2;
-    }
-    .lightbox-prev { left: 5px; }
-    .lightbox-next { right: 5px; }
-}
-
-@media (max-width: 768px) {
-    .gallery-grid {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 10px;
-    }
-    .gallery-item:nth-child(6n + 1) {
-        grid-column: span 2;
-        grid-row: span 1;
-        aspect-ratio: 16 / 9;
-    }
-    .gallery-overlay {
-        opacity: 1;
-        background: linear-gradient(to top, rgba(12,20,37,.85), transparent 70%);
-    }
-    .gallery-overlay h4 { font-size: 13px; }
-    .gallery-zoom { display: none; }
-
-    .lightbox-close { top: 10px; right: 10px; }
-    .lightbox-prev,
-    .lightbox-next { width: 38px; height: 38px; }
-    .lightbox img { max-height: 65vh; }
-}
-
-@media (max-width: 480px) {
-    .gallery-filters { gap: 8px; }
-    .filter-btn { padding: 7px 14px; font-size: 12px; }
-    .lightbox-caption h3 { font-size: 15px; }
-}
+        .lightbox-close { top: -55px; right: 0; }
+        .lightbox-prev  { left: -60px; top: 50%; transform: translateY(-50%); }
+        .lightbox-next  { right: -60px; top: 50%; transform: translateY(-50%); }
 
         /* =========================================================
            HERO
@@ -663,6 +596,7 @@ $heroBg = 'assets/images/school-background.jpg';
             transition: .25s ease;
             cursor: pointer;
             border: none;
+            font-family: inherit;
         }
 
         .btn-primary { background: var(--gold); color: var(--navy-dark); }
@@ -932,6 +866,9 @@ $heroBg = 'assets/images/school-background.jpg';
             .institution-grid,
             .news-grid { grid-template-columns: repeat(2, 1fr); }
             .footer-grid { grid-template-columns: 1fr 1fr; }
+            .gallery-grid { grid-template-columns: repeat(3, 1fr); }
+            .lightbox-prev { left: 5px; }
+            .lightbox-next { right: 5px; }
         }
 
         @media (max-width: 768px) {
@@ -962,6 +899,24 @@ $heroBg = 'assets/images/school-background.jpg';
             .news-grid,
             .event-list { grid-template-columns: 1fr; }
 
+            .gallery-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+            .gallery-item:nth-child(6n + 1) {
+                grid-column: span 2;
+                grid-row: span 1;
+                aspect-ratio: 16 / 9;
+            }
+            .gallery-overlay {
+                opacity: 1;
+                background: linear-gradient(to top, rgba(12,20,37,.85), transparent 70%);
+            }
+            .gallery-overlay h4 { font-size: 13px; }
+            .gallery-zoom { display: none; }
+
+            .lightbox-close { top: 10px; right: 10px; }
+            .lightbox-prev,
+            .lightbox-next { width: 38px; height: 38px; }
+            .lightbox img { max-height: 65vh; }
+
             .section { padding: 65px 6%; }
             .hero { padding: 70px 6%; min-height: auto; }
             .hero h1 { letter-spacing: -1px; }
@@ -977,6 +932,10 @@ $heroBg = 'assets/images/school-background.jpg';
             .stats-band { grid-template-columns: 1fr 1fr; }
             .btn { width: 100%; }
             .hero-buttons { flex-direction: column; }
+
+            .gallery-filters { gap: 8px; }
+            .filter-btn { padding: 7px 14px; font-size: 12px; }
+            .lightbox-caption h3 { font-size: 15px; }
         }
     </style>
 </head>
@@ -1006,6 +965,7 @@ $heroBg = 'assets/images/school-background.jpg';
     <nav class="nav-links" id="navLinks">
         <a href="#institutions">Our Schools</a>
         <a href="#news">News</a>
+        <a href="#gallery">Gallery</a>
         <a href="#events">Events</a>
         <a href="#contact">Contact</a>
         <a href="login.php" class="nav-login">Login</a>
@@ -1050,7 +1010,7 @@ $heroBg = 'assets/images/school-background.jpg';
     <?php endforeach; ?>
 </section>
 
-           <!-- INSTITUTIONS / SCHOOL LEVELS -->
+<!-- INSTITUTIONS / SCHOOL LEVELS -->
 <section class="section institutions" id="institutions">
     <div class="section-heading">
         <div class="section-label">01 — Our School</div>
@@ -1068,9 +1028,6 @@ $heroBg = 'assets/images/school-background.jpg';
         <?php endforeach; ?>
     </div>
 </section>
-
-
-
 
 <!-- =========================================================
      NEWS
@@ -1106,7 +1063,6 @@ $heroBg = 'assets/images/school-background.jpg';
     <p>Application forms for the current academic year are now available for all classes from Kindergarten to Standard Seven.</p>
     <a href="admissions.php" class="btn btn-primary">Admissions Open</a>
 </section>
-
 
 <!-- =========================================================
      GALLERY / KUMBUKUMBU
@@ -1247,7 +1203,6 @@ $heroBg = 'assets/images/school-background.jpg';
 </script>
 <?php endif; ?>
 
-
 <!-- =========================================================
      EVENTS
 ========================================================= -->
@@ -1307,6 +1262,7 @@ $heroBg = 'assets/images/school-background.jpg';
             <ul>
                 <li><a href="#institutions">Our Schools</a></li>
                 <li><a href="#news">News</a></li>
+                <li><a href="#gallery">Gallery</a></li>
                 <li><a href="#events">Events</a></li>
                 <li><a href="login.php">Login</a></li>
             </ul>
@@ -1316,11 +1272,10 @@ $heroBg = 'assets/images/school-background.jpg';
             <h4>Contact</h4>
             <ul>
                 <?php if (!empty($address)): ?><li><?php echo $address; ?></li><?php endif; ?>
-                <?php if (!empty($phone)): ?><li>📞 <?php echo $phone; ?></li><?php endif; ?>
+                <?php if (!empty($phone)):  ?><li>📞 <?php echo $phone;  ?></li><?php endif; ?>
                 <?php if (!empty($phone1)): ?><li>📞 <?php echo $phone1; ?></li><?php endif; ?>
                 <?php if (!empty($phone2)): ?><li>📞 <?php echo $phone2; ?></li><?php endif; ?>
-                <?php if (!empty($email)): ?><li>✉ <?php echo $email; ?></li><?php endif; ?>
-                <?php if (!empty($head_teacher)): ?><li>Head Teacher: <?php echo $head_teacher; ?></li><?php endif; ?>
+                <?php if (!empty($email)):  ?><li>✉ <?php echo $email;  ?></li><?php endif; ?>
             </ul>
         </div>
     </div>

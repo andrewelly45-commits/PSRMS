@@ -2,1045 +2,862 @@
 session_start();
 
 require_once '../auth/auth_check.php';
+requireRole('admin');
+
 require_once '../includes/db.php';
 
-/*
-|--------------------------------------------------------------------------
-| ADMIN ACCESS
-|--------------------------------------------------------------------------
-*/
 
-if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'admin') {
-    header("Location: ../login.php");
-    exit;
+/* =========================================================================
+   HELPERS
+   ========================================================================= */
+
+function e($v): string
+{
+    return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
 }
 
-/*
-|--------------------------------------------------------------------------
-| CREATE UPLOAD DIRECTORY IF IT DOES NOT EXIST
-|--------------------------------------------------------------------------
-*/
 
-$upload_dir = '../uploads/school/';
+/* =========================================================================
+   UPLOAD DIR
+   ========================================================================= */
 
+$upload_dir = __DIR__ . '/../uploads/school/';
 if (!is_dir($upload_dir)) {
-    mkdir($upload_dir, 0755, true);
+    @mkdir($upload_dir, 0755, true);
 }
+
+
+/* =========================================================================
+   LOAD / CREATE SETTINGS
+   ========================================================================= */
+
+$settings = [
+    'setting_id'  => 1,
+    'school_name' => '',
+    'address'     => '',
+    'phone'       => '',
+    'phone1'      => '',
+    'phone2'      => '',
+    'email'       => '',
+    'logo'        => '',
+];
+
+$res = mysqli_query(
+    $conn,
+    "SELECT setting_id, school_name, address, phone, phone1, phone2, email, logo
+     FROM school_settings
+     ORDER BY setting_id ASC
+     LIMIT 1"
+);
+
+if ($res && mysqli_num_rows($res) > 0) {
+    $settings = mysqli_fetch_assoc($res);
+} else {
+    /* Create the first row */
+    $ins = mysqli_query(
+        $conn,
+        "INSERT INTO school_settings (school_name) VALUES ('Primary School')"
+    );
+    if ($ins) {
+        $settings['setting_id'] = mysqli_insert_id($conn);
+    }
+}
+
+
+/* =========================================================================
+   MESSAGE
+   ========================================================================= */
 
 $message = '';
 $message_type = '';
 
-/*
-|--------------------------------------------------------------------------
-| GET CURRENT SCHOOL SETTINGS
-|--------------------------------------------------------------------------
-*/
 
-$settings = [
-    'setting_id'   => 1,
-    'school_name'  => '',
-    'school_code'  => '',
-    'address'      => '',
-    'phone'        => '',
-    'email'        => '',
-    'logo'         => '',
-    'head_teacher' => ''
-];
-
-$query = "
-    SELECT
-        setting_id,
-        school_name,
-        school_code,
-        address,
-        phone,
-        email,
-        logo,
-        head_teacher
-    FROM school_settings
-    ORDER BY setting_id ASC
-    LIMIT 1
-";
-
-$result = mysqli_query($conn, $query);
-
-if ($result && mysqli_num_rows($result) > 0) {
-
-    $settings = mysqli_fetch_assoc($result);
-
-} else {
-
-    /*
-    |--------------------------------------------------------------------------
-    | CREATE FIRST SETTINGS ROW IF TABLE IS EMPTY
-    |--------------------------------------------------------------------------
-    */
-
-    $insert = "
-        INSERT INTO school_settings (
-            school_name,
-            school_code,
-            address,
-            phone,
-            email,
-            logo,
-            head_teacher
-        )
-        VALUES (
-            'Primary School',
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL,
-            NULL
-        )
-    ";
-
-    if (mysqli_query($conn, $insert)) {
-
-        $settings['setting_id'] = mysqli_insert_id($conn);
-
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
-| UPDATE SCHOOL SETTINGS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================================
+   HANDLE POST
+   ========================================================================= */
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    $setting_id = (int)($_POST['setting_id'] ?? 0);
-
+    $setting_id  = (int) ($_POST['setting_id'] ?? 0);
     $school_name = trim($_POST['school_name'] ?? '');
-    $school_code = trim($_POST['school_code'] ?? '');
-    $address = trim($_POST['address'] ?? '');
-    $phone = trim($_POST['phone'] ?? '');
-    $email = trim($_POST['email'] ?? '');
-    $head_teacher = trim($_POST['head_teacher'] ?? '');
+    $address     = trim($_POST['address']     ?? '');
+    $phone       = trim($_POST['phone']       ?? '');
+    $phone1      = trim($_POST['phone1']      ?? '');
+    $phone2      = trim($_POST['phone2']      ?? '');
+    $email       = trim($_POST['email']       ?? '');
 
-    /*
-    |--------------------------------------------------------------------------
-    | VALIDATION
-    |--------------------------------------------------------------------------
-    */
+    /* ---------- Validation ---------- */
 
     if ($school_name === '') {
-
         $message = 'School name is required.';
         $message_type = 'error';
-
     } elseif ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-
         $message = 'Please enter a valid email address.';
         $message_type = 'error';
+    }
 
-    } else {
+    /* ---------- Logo handling ---------- */
 
-        /*
-        |--------------------------------------------------------------------------
-        | CURRENT LOGO
-        |--------------------------------------------------------------------------
-        */
+    $current_logo = $settings['logo'] ?? '';
+    $new_logo     = $current_logo;
 
-        $current_logo = $settings['logo'] ?? '';
-        $new_logo = $current_logo;
+    if (
+        $message_type !== 'error' &&
+        isset($_FILES['logo']) &&
+        $_FILES['logo']['error'] !== UPLOAD_ERR_NO_FILE
+    ) {
 
-        /*
-        |--------------------------------------------------------------------------
-        | LOGO UPLOAD
-        |--------------------------------------------------------------------------
-        */
+        if ($_FILES['logo']['error'] !== UPLOAD_ERR_OK) {
 
-        if (
-            isset($_FILES['logo']) &&
-            $_FILES['logo']['error'] !== UPLOAD_ERR_NO_FILE
-        ) {
+            $message = 'There was a problem uploading the logo.';
+            $message_type = 'error';
 
-            if ($_FILES['logo']['error'] !== UPLOAD_ERR_OK) {
+        } else {
 
-                $message = 'There was a problem uploading the logo.';
+            $tmp  = $_FILES['logo']['tmp_name'];
+            $size = $_FILES['logo']['size'];
+
+            if ($size > 2 * 1024 * 1024) {
+
+                $message = 'Logo size must not exceed 2MB.';
                 $message_type = 'error';
 
             } else {
 
-                $file_tmp = $_FILES['logo']['tmp_name'];
-                $file_name = $_FILES['logo']['name'];
-                $file_size = $_FILES['logo']['size'];
+                $info = @getimagesize($tmp);
 
-                /*
-                |--------------------------------------------------------------------------
-                | MAXIMUM SIZE: 2MB
-                |--------------------------------------------------------------------------
-                */
+                if ($info === false) {
 
-                if ($file_size > 2 * 1024 * 1024) {
-
-                    $message = 'Logo size must not exceed 2MB.';
+                    $message = 'The uploaded file is not a valid image.';
                     $message_type = 'error';
 
                 } else {
 
-                    $image_info = getimagesize($file_tmp);
+                    $allowed = [
+                        IMAGETYPE_JPEG => 'jpg',
+                        IMAGETYPE_PNG  => 'png',
+                        IMAGETYPE_WEBP => 'webp',
+                    ];
 
-                    if ($image_info === false) {
+                    if (!isset($allowed[$info[2]])) {
 
-                        $message = 'The uploaded file is not a valid image.';
+                        $message = 'Only JPG, PNG and WEBP images are allowed.';
                         $message_type = 'error';
 
                     } else {
 
-                        $allowed_types = [
-                            IMAGETYPE_JPEG => 'jpg',
-                            IMAGETYPE_PNG  => 'png',
-                            IMAGETYPE_WEBP => 'webp'
-                        ];
+                        $ext      = $allowed[$info[2]];
+                        $filename = 'school_logo_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+                        $dest     = $upload_dir . $filename;
 
-                        $image_type = $image_info[2];
+                        if (move_uploaded_file($tmp, $dest)) {
 
-                        if (!isset($allowed_types[$image_type])) {
+                            /* Delete old logo */
+                            if ($current_logo) {
+                                $old = __DIR__ . '/../' . ltrim($current_logo, '/');
+                                if (is_file($old)) @unlink($old);
+                            }
 
-                            $message = 'Only JPG, PNG and WEBP images are allowed.';
-                            $message_type = 'error';
+                            $new_logo = 'uploads/school/' . $filename;
 
                         } else {
 
-                            $extension = $allowed_types[$image_type];
+                            $message = 'Unable to save the uploaded logo.';
+                            $message_type = 'error';
 
-                            /*
-                            |--------------------------------------------------------------------------
-                            | UNIQUE FILE NAME
-                            |--------------------------------------------------------------------------
-                            */
-
-                            $new_file_name =
-                                'school_logo_' .
-                                time() .
-                                '_' .
-                                bin2hex(random_bytes(4)) .
-                                '.' .
-                                $extension;
-
-                            $destination =
-                                $upload_dir . $new_file_name;
-
-                            if (move_uploaded_file($file_tmp, $destination)) {
-
-                                $new_logo =
-                                    'uploads/school/' . $new_file_name;
-
-                                /*
-                                |--------------------------------------------------------------------------
-                                | DELETE OLD LOGO
-                                |--------------------------------------------------------------------------
-                                */
-
-                                if (!empty($current_logo)) {
-
-                                    $old_logo_path =
-                                        '../' . ltrim($current_logo, '/');
-
-                                    if (
-                                        file_exists($old_logo_path) &&
-                                        is_file($old_logo_path)
-                                    ) {
-                                        unlink($old_logo_path);
-                                    }
-                                }
-
-                            } else {
-
-                                $message =
-                                    'Unable to save the uploaded logo.';
-                                $message_type = 'error';
-
-                            }
                         }
                     }
                 }
             }
         }
+    }
 
-        /*
-        |--------------------------------------------------------------------------
-        | UPDATE DATABASE
-        |--------------------------------------------------------------------------
-        */
+    /* ---------- Save ---------- */
 
-        if ($message_type !== 'error') {
+    if ($message_type !== 'error') {
 
-            $stmt = mysqli_prepare(
-                $conn,
-                "
-                UPDATE school_settings
-                SET
-                    school_name = ?,
-                    school_code = ?,
-                    address = ?,
-                    phone = ?,
-                    email = ?,
-                    logo = ?,
-                    head_teacher = ?
-                WHERE setting_id = ?
-                "
-            );
+        $stmt = mysqli_prepare(
+            $conn,
+            "UPDATE school_settings
+             SET school_name = ?,
+                 address = ?,
+                 phone = ?,
+                 phone1 = ?,
+                 phone2 = ?,
+                 email = ?,
+                 logo = ?
+             WHERE setting_id = ?"
+        );
 
-            mysqli_stmt_bind_param(
-                $stmt,
-                "sssssssi",
-                $school_name,
-                $school_code,
-                $address,
-                $phone,
-                $email,
-                $new_logo,
-                $head_teacher,
-                $setting_id
-            );
+        mysqli_stmt_bind_param(
+            $stmt,
+            'sssssssi',
+            $school_name,
+            $address,
+            $phone,
+            $phone1,
+            $phone2,
+            $email,
+            $new_logo,
+            $setting_id
+        );
 
-            if (mysqli_stmt_execute($stmt)) {
+        if (mysqli_stmt_execute($stmt)) {
 
-                $message =
-                    'School settings have been updated successfully.';
+            $message = 'School settings updated successfully.';
+            $message_type = 'success';
 
-                $message_type = 'success';
+            /* Refresh local copy */
+            $settings['setting_id']  = $setting_id;
+            $settings['school_name'] = $school_name;
+            $settings['address']     = $address;
+            $settings['phone']       = $phone;
+            $settings['phone1']      = $phone1;
+            $settings['phone2']      = $phone2;
+            $settings['email']       = $email;
+            $settings['logo']        = $new_logo;
 
-                /*
-                |--------------------------------------------------------------------------
-                | REFRESH SETTINGS
-                |--------------------------------------------------------------------------
-                */
+        } else {
 
-                $settings['setting_id'] = $setting_id;
-                $settings['school_name'] = $school_name;
-                $settings['school_code'] = $school_code;
-                $settings['address'] = $address;
-                $settings['phone'] = $phone;
-                $settings['email'] = $email;
-                $settings['logo'] = $new_logo;
-                $settings['head_teacher'] = $head_teacher;
-
-            } else {
-
-                $message =
-                    'Unable to update school settings: ' .
-                    mysqli_error($conn);
-
-                $message_type = 'error';
-            }
-
-            mysqli_stmt_close($stmt);
+            $message = 'Could not update: ' . mysqli_error($conn);
+            $message_type = 'error';
         }
+
+        mysqli_stmt_close($stmt);
     }
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| ESCAPE OUTPUT
-|--------------------------------------------------------------------------
-*/
-
-$school_name = htmlspecialchars(
-    $settings['school_name'] ?? '',
-    ENT_QUOTES,
-    'UTF-8'
-);
-
-$school_code = htmlspecialchars(
-    $settings['school_code'] ?? '',
-    ENT_QUOTES,
-    'UTF-8'
-);
-
-$address = htmlspecialchars(
-    $settings['address'] ?? '',
-    ENT_QUOTES,
-    'UTF-8'
-);
-
-$phone = htmlspecialchars(
-    $settings['phone'] ?? '',
-    ENT_QUOTES,
-    'UTF-8'
-);
-
-$email = htmlspecialchars(
-    $settings['email'] ?? '',
-    ENT_QUOTES,
-    'UTF-8'
-);
-
-$head_teacher = htmlspecialchars(
-    $settings['head_teacher'] ?? '',
-    ENT_QUOTES,
-    'UTF-8'
-);
-
-$logo = $settings['logo'] ?? '';
-
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-
     <meta charset="UTF-8">
-
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#10182b">
     <title>School Settings | PSRMS</title>
 
     <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --navy: #17233c;
+            --navy-dark: #10182b;
+            --gold: #c9a227;
+            --gold-light: #e2c65a;
+            --cream: #f7f5ef;
+            --white: #ffffff;
+            --text: #263044;
+            --muted: #747d8e;
+            --border: #e3e6eb;
+            --red: #9b4747;
+            --red-bg: #fbefef;
+            --green: #3e7655;
+            --green-bg: #eef6f0;
+            --sidebar-w: 250px;
+            --topbar-h: 64px;
         }
+
+        html, body { overflow-x: hidden; }
 
         body {
-            font-family: "Segoe UI", Arial, sans-serif;
-            background: #f4f6f9;
-            color: #263044;
-        }
-
-        .page {
+            font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+            background: var(--cream);
+            color: var(--text);
             min-height: 100vh;
-            padding: 35px;
+            -webkit-text-size-adjust: 100%;
         }
 
+        body.no-scroll { overflow: hidden; }
+
+        /* =========================================================
+           MAIN LAYOUT
+        ========================================================= */
+        .main-content {
+            margin-left: var(--sidebar-w);
+            padding: calc(var(--topbar-h) + 30px) 30px 40px;
+            transition: margin-left .25s ease;
+        }
+
+        @media (min-width: 801px) {
+            body.sidebar-collapsed .main-content { margin-left: 78px; }
+        }
+
+        /* =========================================================
+           PAGE HEADER
+        ========================================================= */
         .page-header {
-            margin-bottom: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 15px;
+            margin-bottom: 22px;
+            flex-wrap: wrap;
         }
 
-        .page-header h1 {
-            font-size: 28px;
-            color: #17233c;
+        .page-title h1 {
+            color: var(--navy);
+            font-size: 25px;
+            font-weight: 700;
+        }
+
+        .page-title p {
+            color: var(--muted);
+            font-size: 12.5px;
+            margin-top: 5px;
+        }
+
+        /* =========================================================
+           ALERTS
+        ========================================================= */
+        .alert {
+            border-radius: 8px;
+            padding: 12px 15px;
+            margin-bottom: 18px;
+            font-size: 12.5px;
+            font-weight: 600;
+        }
+        .alert.success { background: var(--green-bg); border: 1px solid #cfe5d7; color: var(--green); }
+        .alert.error   { background: var(--red-bg);   border: 1px solid #efd2d2; color: var(--red); }
+
+        /* =========================================================
+           CARD
+        ========================================================= */
+        .settings-card {
+            background: var(--white);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            max-width: 1000px;
+        }
+
+        .card-section {
+            padding: 22px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .card-section:last-of-type { border-bottom: none; }
+
+        .section-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--navy);
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .8px;
+            margin-bottom: 16px;
+        }
+
+        .section-title::before {
+            content: "";
+            width: 3px;
+            height: 14px;
+            background: var(--gold);
+            border-radius: 2px;
+        }
+
+        /* =========================================================
+           FORM
+        ========================================================= */
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px 18px;
+        }
+
+        .form-group { min-width: 0; }
+        .form-group.full { grid-column: 1 / -1; }
+
+        .form-group label {
+            display: block;
+            color: var(--navy);
+            font-size: 11px;
+            font-weight: 700;
             margin-bottom: 6px;
         }
 
-        .page-header p {
-            color: #747d8d;
-            font-size: 14px;
-        }
+        .form-group label .req { color: var(--red); margin-left: 2px; }
 
-        .settings-container {
-            max-width: 1100px;
-            margin: 0 auto;
-        }
-
-        .settings-card {
-            background: #ffffff;
-            border: 1px solid #e4e7ec;
-            border-radius: 14px;
-            overflow: hidden;
-            box-shadow: 0 12px 35px rgba(20, 31, 51, 0.06);
-        }
-
-        .card-header {
-            padding: 24px 28px;
-            border-bottom: 1px solid #e8ebef;
-            background: #fafbfc;
-        }
-
-        .card-header h2 {
-            font-size: 18px;
-            color: #17233c;
-            margin-bottom: 4px;
-        }
-
-        .card-header p {
-            color: #7b8493;
-            font-size: 13px;
-        }
-
-        .card-body {
-            padding: 30px;
-        }
-
-        .alert {
-            padding: 14px 17px;
-            border-radius: 8px;
-            margin-bottom: 24px;
-            font-size: 14px;
-            font-weight: 500;
-        }
-
-        .alert.success {
-            background: #edf8f1;
-            color: #217346;
-            border: 1px solid #ccebd7;
-        }
-
-        .alert.error {
-            background: #fff1f1;
-            color: #a52a2a;
-            border: 1px solid #f1cccc;
-        }
-
-        .form-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 22px;
-        }
-
-        .form-group {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .form-group.full {
-            grid-column: 1 / -1;
-        }
-
-        label {
-            font-size: 13px;
-            font-weight: 650;
-            color: #27344d;
-            margin-bottom: 8px;
-        }
-
-        label span {
-            color: #c9a227;
-        }
-
-        input,
-        textarea {
+        .form-control {
             width: 100%;
-            border: 1px solid #dfe3e9;
+            height: 44px;
+            border: 1px solid var(--border);
             border-radius: 8px;
-            padding: 12px 14px;
+            padding: 0 12px;
             font-family: inherit;
-            font-size: 14px;
-            color: #263044;
-            background: #ffffff;
+            font-size: 13.5px;
+            background: #fcfcfd;
+            color: var(--text);
             outline: none;
-            transition: .2s;
+            transition: .2s ease;
         }
 
-        input:focus,
-        textarea:focus {
-            border-color: #c9a227;
-            box-shadow: 0 0 0 3px rgba(201, 162, 39, .10);
-        }
-
-        textarea {
-            min-height: 105px;
+        textarea.form-control {
+            height: auto;
+            min-height: 90px;
+            padding: 12px;
             resize: vertical;
+            line-height: 1.5;
         }
 
-        .logo-section {
-            margin-top: 30px;
-            padding-top: 28px;
-            border-top: 1px solid #e8ebef;
+        .form-control:focus {
+            border-color: var(--gold);
+            background: var(--white);
+            box-shadow: 0 0 0 3px rgba(201,162,39,.12);
         }
 
-        .logo-section h3 {
-            color: #17233c;
-            font-size: 16px;
-            margin-bottom: 5px;
+        .help-text {
+            color: var(--muted);
+            font-size: 10.5px;
+            margin-top: 5px;
         }
 
-        .logo-section > p {
-            color: #7b8493;
-            font-size: 13px;
-            margin-bottom: 20px;
-        }
-
-        .logo-upload {
+        /* =========================================================
+           LOGO UPLOAD
+        ========================================================= */
+        .logo-block {
             display: grid;
-            grid-template-columns: 180px 1fr;
-            gap: 25px;
+            grid-template-columns: 160px 1fr;
+            gap: 22px;
             align-items: center;
         }
 
         .logo-preview {
-            width: 170px;
-            height: 170px;
+            width: 160px;
+            height: 160px;
             border-radius: 12px;
-            border: 1px solid #dfe3e9;
-            background: #f7f8fa;
+            border: 2px dashed var(--border);
+            background: #fcfcfd;
             display: flex;
             align-items: center;
             justify-content: center;
             overflow: hidden;
+            flex-shrink: 0;
+            position: relative;
         }
 
         .logo-preview img {
             width: 100%;
             height: 100%;
             object-fit: contain;
+            padding: 8px;
         }
 
         .logo-placeholder {
-            color: #9aa2af;
+            color: var(--muted);
             text-align: center;
-            font-size: 12px;
-            padding: 20px;
+            font-size: 11.5px;
+            padding: 16px;
+            line-height: 1.4;
+        }
+
+        .logo-placeholder strong {
+            display: block;
+            color: var(--navy);
+            font-size: 20px;
+            margin-bottom: 6px;
+        }
+
+        .upload-hint strong {
+            color: var(--navy);
+            display: block;
+            font-size: 12.5px;
+            margin-bottom: 4px;
+        }
+
+        .upload-hint span {
+            color: var(--muted);
+            font-size: 11px;
+            display: block;
+            margin-bottom: 12px;
+        }
+
+        .file-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
         }
 
         .file-input {
-            border: 2px dashed #d9dee6;
-            padding: 25px;
-            border-radius: 10px;
-            background: #fafbfc;
+            display: none;
         }
 
-        .file-input input {
-            border: none;
-            padding: 0;
-            background: transparent;
+        .choose-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 42px;
+            padding: 0 18px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--white);
+            color: var(--navy);
+            font-family: inherit;
+            font-size: 12.5px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: .15s ease;
+            -webkit-tap-highlight-color: transparent;
         }
 
-        .file-help {
-            color: #8a929f;
+        .choose-btn:hover { border-color: var(--gold); color: var(--gold); }
+
+        .file-name {
+            color: var(--muted);
             font-size: 12px;
-            margin-top: 10px;
+            overflow-wrap: anywhere;
         }
 
-        .form-actions {
-            margin-top: 32px;
-            padding-top: 25px;
-            border-top: 1px solid #e8ebef;
+        /* =========================================================
+           FOOTER ACTIONS
+        ========================================================= */
+        .form-footer {
             display: flex;
             justify-content: flex-end;
-            gap: 12px;
+            gap: 10px;
+            padding: 18px 22px;
+            background: #fafaf8;
+            border-top: 1px solid var(--border);
         }
 
         .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            min-height: 44px;
+            padding: 0 22px;
             border: none;
-            border-radius: 8px;
-            padding: 12px 22px;
-            font-size: 14px;
-            font-weight: 650;
+            border-radius: 9px;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 700;
             cursor: pointer;
             text-decoration: none;
-            transition: .2s;
+            white-space: nowrap;
+            transition: .15s ease;
+            -webkit-tap-highlight-color: transparent;
         }
 
-        .btn-primary {
-            background: #17233c;
-            color: #ffffff;
+        .btn-primary { background: var(--navy); color: var(--white); }
+        .btn-primary:hover { background: var(--navy-dark); }
+        .btn-primary:active { transform: scale(.98); }
+
+        .btn-ghost {
+            background: var(--white);
+            color: var(--muted);
+            border: 1px solid var(--border);
+        }
+        .btn-ghost:hover { color: var(--navy); border-color: #c8ccd3; }
+
+        /* =========================================================
+           RESPONSIVE
+        ========================================================= */
+        @media (max-width: 800px) {
+
+            .main-content {
+                margin-left: 0;
+                padding: calc(var(--topbar-h) + 20px) 16px 30px;
+            }
+
+            body.sidebar-collapsed .main-content { margin-left: 0; }
+
+            .page-title h1 { font-size: 21px; }
+            .page-title p  { font-size: 12px; line-height: 1.45; }
+
+            .card-section { padding: 18px; }
+
+            .form-grid { grid-template-columns: 1fr; gap: 14px; }
+            .form-group.full { grid-column: auto; }
+
+            .form-control { height: 46px; font-size: 14px; }
+            textarea.form-control { min-height: 100px; }
+
+            .logo-block {
+                grid-template-columns: 1fr;
+                gap: 18px;
+                text-align: center;
+            }
+
+            .logo-preview {
+                width: 140px;
+                height: 140px;
+                margin: 0 auto;
+            }
+
+            .upload-hint { text-align: left; }
+
+            .file-row {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 8px;
+            }
+
+            .choose-btn {
+                width: 100%;
+                min-height: 46px;
+                font-size: 13px;
+            }
+
+            .file-name { text-align: center; }
+
+            .form-footer {
+                flex-direction: column-reverse;
+                padding: 14px 18px;
+            }
+            .form-footer .btn { width: 100%; }
         }
 
-        .btn-primary:hover {
-            background: #243451;
-            transform: translateY(-1px);
-        }
+        @media (max-width: 550px) {
+            .main-content { padding: calc(var(--topbar-h) + 14px) 14px 24px; }
+            .page-title h1 { font-size: 19px; }
+            .page-title p  { font-size: 11.5px; }
 
-        .btn-secondary {
-            background: #eef1f5;
-            color: #364258;
-        }
+            .card-section { padding: 16px; }
+            .section-title { font-size: 11px; }
 
-        .btn-secondary:hover {
-            background: #e3e7ed;
-        }
-
-        .settings-note {
-            margin-top: 22px;
-            padding: 15px 17px;
-            background: #faf7eb;
-            border-left: 3px solid #c9a227;
-            color: #665825;
-            font-size: 13px;
-            border-radius: 5px;
+            .logo-preview {
+                width: 120px;
+                height: 120px;
+            }
         }
 
         @media (max-width: 800px) {
-
-            .page {
-                padding: 20px;
+            @supports (padding: max(0px)) {
+                .main-content {
+                    padding-left:  max(14px, env(safe-area-inset-left));
+                    padding-right: max(14px, env(safe-area-inset-right));
+                    padding-bottom: max(24px, env(safe-area-inset-bottom));
+                }
             }
-
-            .form-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .form-group.full {
-                grid-column: auto;
-            }
-
-            .logo-upload {
-                grid-template-columns: 1fr;
-            }
-
         }
-
-        @media (max-width: 500px) {
-
-            .page {
-                padding: 12px;
-            }
-
-            .card-body {
-                padding: 20px;
-            }
-
-            .form-actions {
-                flex-direction: column;
-            }
-
-            .btn {
-                width: 100%;
-            }
-
-        }
-
     </style>
-
 </head>
-
-
 <body>
 
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
 
-<div class="page">
+<?php
+$topbar_title    = 'School Settings';
+$topbar_subtitle = 'Manage school information';
+include '../includes/topbar.php';
+?>
 
-    <div class="settings-container">
+<?php include 'admin_sidebar.php'; ?>
 
-        <div class="page-header">
+<main class="main-content with-topbar">
 
-            <h1>
-                School Settings
-            </h1>
-
-            <p>
-                Manage the school information displayed across PSRMS.
-            </p>
-
+    <!-- PAGE HEADER -->
+    <div class="page-header">
+        <div class="page-title">
+            <h1>School Settings</h1>
+            <p>Manage the school information displayed across PSRMS.</p>
         </div>
-
-
-        <div class="settings-card">
-
-            <div class="card-header">
-
-                <h2>
-                    School Information
-                </h2>
-
-                <p>
-                    These details will be fetched automatically by
-                    the public website and other system components.
-                </p>
-
-            </div>
-
-
-            <div class="card-body">
-
-
-                <?php if (!empty($message)): ?>
-
-                    <div class="alert <?php echo $message_type; ?>">
-
-                        <?php echo htmlspecialchars($message); ?>
-
-                    </div>
-
-                <?php endif; ?>
-
-
-                <form
-                    method="POST"
-                    enctype="multipart/form-data"
-                >
-
-                    <input
-                        type="hidden"
-                        name="setting_id"
-                        value="<?php echo (int)$settings['setting_id']; ?>"
-                    >
-
-
-                    <div class="form-grid">
-
-
-                        <!-- SCHOOL NAME -->
-
-                        <div class="form-group">
-
-                            <label>
-                                School Name <span>*</span>
-                            </label>
-
-                            <input
-                                type="text"
-                                name="school_name"
-                                value="<?php echo $school_name; ?>"
-                                placeholder="Enter school name"
-                                maxlength="200"
-                                required
-                            >
-
-                        </div>
-
-
-                        <!-- SCHOOL CODE -->
-
-                        <div class="form-group">
-
-                            <label>
-                                School Code
-                            </label>
-
-                            <input
-                                type="text"
-                                name="school_code"
-                                value="<?php echo $school_code; ?>"
-                                placeholder="e.g. PSRMS-001"
-                                maxlength="50"
-                            >
-
-                        </div>
-
-
-                        <!-- HEAD TEACHER -->
-
-                        <div class="form-group">
-
-                            <label>
-                                Head Teacher
-                            </label>
-
-                            <input
-                                type="text"
-                                name="head_teacher"
-                                value="<?php echo $head_teacher; ?>"
-                                placeholder="Enter head teacher name"
-                                maxlength="150"
-                            >
-
-                        </div>
-
-
-                        <!-- PHONE -->
-
-                        <div class="form-group">
-
-                            <label>
-                                Phone Number
-                            </label>
-
-                            <input
-                                type="text"
-                                name="phone"
-                                value="<?php echo $phone; ?>"
-                                placeholder="e.g. +255 7XX XXX XXX"
-                                maxlength="50"
-                            >
-
-                        </div>
-
-
-                        <!-- EMAIL -->
-
-                        <div class="form-group">
-
-                            <label>
-                                Email Address
-                            </label>
-
-                            <input
-                                type="email"
-                                name="email"
-                                value="<?php echo $email; ?>"
-                                placeholder="school@example.com"
-                                maxlength="150"
-                            >
-
-                        </div>
-
-
-                        <!-- ADDRESS -->
-
-                        <div class="form-group full">
-
-                            <label>
-                                School Address
-                            </label>
-
-                            <textarea
-                                name="address"
-                                placeholder="Enter the complete school address"
-                            ><?php echo $address; ?></textarea>
-
-                        </div>
-
-
-                    </div>
-
-
-                    <!-- LOGO -->
-
-                    <div class="logo-section">
-
-                        <h3>
-                            School Logo
-                        </h3>
-
-                        <p>
-                            Upload the logo that will appear on the
-                            public website, sidebar and other system areas.
-                        </p>
-
-
-                        <div class="logo-upload">
-
-
-                            <div class="logo-preview">
-
-                                <?php if (!empty($logo)): ?>
-
-                                    <img
-                                        src="../<?php echo htmlspecialchars($logo); ?>"
-                                        alt="School Logo"
-                                        id="logoPreview"
-                                    >
-
-                                <?php else: ?>
-
-                                    <div
-                                        class="logo-placeholder"
-                                        id="logoPlaceholder"
-                                    >
-                                        No school logo uploaded
-                                    </div>
-
-                                    <img
-                                        id="logoPreview"
-                                        style="display:none;"
-                                        alt="Logo Preview"
-                                    >
-
-                                <?php endif; ?>
-
-                            </div>
-
-
-                            <div class="file-input">
-
-                                <input
-                                    type="file"
-                                    name="logo"
-                                    id="logoInput"
-                                    accept="image/jpeg,image/png,image/webp"
-                                >
-
-                                <div class="file-help">
-
-                                    Accepted formats:
-                                    JPG, PNG and WEBP.
-
-                                    Maximum size: 2MB.
-
-                                </div>
-
-                            </div>
-
-
-                        </div>
-
-                    </div>
-
-
-                    <div class="settings-note">
-
-                        <strong>Important:</strong>
-                        Changes made here will automatically be available
-                        to the public website because the front page reads
-                        the school information directly from the
-                        <code>school_settings</code> table.
-
-                    </div>
-
-
-                    <div class="form-actions">
-
-                        <a
-                            href="../index.php"
-                            target="_blank"
-                            class="btn btn-secondary"
-                        >
-                            View Website
-                        </a>
-
-                        <button
-                            type="submit"
-                            class="btn btn-primary"
-                        >
-                            Save School Settings
-                        </button>
-
-                    </div>
-
-
-                </form>
-
-            </div>
-
-        </div>
-
     </div>
 
-</div>
+    <!-- FLASH -->
+    <?php if ($message): ?>
+        <div class="alert <?php echo e($message_type); ?>">
+            <?php echo e($message); ?>
+        </div>
+    <?php endif; ?>
+
+    <!-- FORM CARD -->
+    <form method="POST" action="settings.php"
+          class="settings-card" enctype="multipart/form-data" autocomplete="off">
+
+        <input type="hidden" name="setting_id"
+               value="<?php echo (int)$settings['setting_id']; ?>">
+
+        <!-- =============================================
+             SECTION 1 — BASIC INFO
+        ============================================== -->
+        <div class="card-section">
+
+            <div class="section-title">Basic Information</div>
+
+            <div class="form-grid">
+
+                <div class="form-group full">
+                    <label>School Name <span class="req">*</span></label>
+                    <input type="text"
+                           name="school_name"
+                           class="form-control"
+                           value="<?php echo e($settings['school_name'] ?? ''); ?>"
+                           placeholder="Enter school name"
+                           maxlength="200"
+                           required>
+                </div>
+
+                <div class="form-group full">
+                    <label>School Address</label>
+                    <textarea name="address"
+                              class="form-control"
+                              placeholder="Enter the complete school address"
+                    ><?php echo e($settings['address'] ?? ''); ?></textarea>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- =============================================
+             SECTION 2 — CONTACT
+        ============================================== -->
+        <div class="card-section">
+
+            <div class="section-title">Contact Information</div>
+
+            <div class="form-grid">
+
+                <div class="form-group">
+                    <label>Main Phone</label>
+                    <input type="text"
+                           name="phone"
+                           class="form-control"
+                           value="<?php echo e($settings['phone'] ?? ''); ?>"
+                           placeholder="e.g. +255 7XX XXX XXX"
+                           maxlength="50">
+                </div>
+
+                <div class="form-group">
+                    <label>Email Address</label>
+                    <input type="email"
+                           name="email"
+                           class="form-control"
+                           value="<?php echo e($settings['email'] ?? ''); ?>"
+                           placeholder="school@example.com"
+                           maxlength="150">
+                </div>
+
+                <div class="form-group">
+                    <label>Alternate Phone 1</label>
+                    <input type="text"
+                           name="phone1"
+                           class="form-control"
+                           value="<?php echo e($settings['phone1'] ?? ''); ?>"
+                           placeholder="Secondary phone"
+                           maxlength="30">
+                </div>
+
+                <div class="form-group">
+                    <label>Alternate Phone 2</label>
+                    <input type="text"
+                           name="phone2"
+                           class="form-control"
+                           value="<?php echo e($settings['phone2'] ?? ''); ?>"
+                           placeholder="Tertiary phone"
+                           maxlength="30">
+                </div>
+
+            </div>
+        </div>
+
+        <!-- =============================================
+             SECTION 3 — LOGO
+        ============================================== -->
+        <div class="card-section">
+
+            <div class="section-title">School Logo</div>
+
+            <div class="logo-block">
+
+                <div class="logo-preview" id="logoPreviewWrap">
+                    <?php if (!empty($settings['logo'])): ?>
+                        <img src="../<?php echo e($settings['logo']); ?>"
+                             alt="School logo" id="logoPreview">
+                    <?php else: ?>
+                        <div class="logo-placeholder" id="logoPlaceholder">
+                            <strong>Logo</strong>
+                            No school logo uploaded yet
+                        </div>
+                        <img id="logoPreview" style="display:none;" alt="Logo preview">
+                    <?php endif; ?>
+                </div>
+
+                <div class="upload-hint">
+                    <strong>Upload a logo</strong>
+                    <span>JPG, PNG or WEBP — max 2MB. Recommended: square or landscape PNG with transparent background.</span>
+
+                    <div class="file-row">
+                        <button type="button" class="choose-btn"
+                                onclick="document.getElementById('logoInput').click()">
+                            Choose Image
+                        </button>
+                        <span class="file-name" id="fileName">No file selected</span>
+
+                        <input type="file"
+                               name="logo"
+                               id="logoInput"
+                               class="file-input"
+                               accept="image/jpeg,image/png,image/webp">
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- FOOTER -->
+        <div class="form-footer">
+            <a href="../index.php" target="_blank" class="btn btn-ghost">
+                View Website →
+            </a>
+            <button type="submit" class="btn btn-primary">
+                Save Settings
+            </button>
+        </div>
+
+    </form>
+
+</main>
 
 
 <script>
+/* =========================================================
+   LOGO LIVE PREVIEW
+========================================================= */
+(function () {
+    const input       = document.getElementById('logoInput');
+    const preview     = document.getElementById('logoPreview');
+    const placeholder = document.getElementById('logoPlaceholder');
+    const fileName    = document.getElementById('fileName');
 
-    /*
-    |--------------------------------------------------------------------------
-    | LOGO LIVE PREVIEW
-    |--------------------------------------------------------------------------
-    */
+    if (!input) return;
 
-    const logoInput = document.getElementById('logoInput');
-    const logoPreview = document.getElementById('logoPreview');
-    const logoPlaceholder =
-        document.getElementById('logoPlaceholder');
+    input.addEventListener('change', function () {
+        const file = this.files[0];
+        if (!file) {
+            fileName.textContent = 'No file selected';
+            return;
+        }
 
-    if (logoInput) {
+        fileName.textContent = file.name;
 
-        logoInput.addEventListener('change', function () {
+        if (!file.type.startsWith('image/')) {
+            alert('Please choose an image file.');
+            this.value = '';
+            fileName.textContent = 'No file selected';
+            return;
+        }
 
-            const file = this.files[0];
+        if (file.size > 2 * 1024 * 1024) {
+            alert('Logo must be smaller than 2MB.');
+            this.value = '';
+            fileName.textContent = 'No file selected';
+            return;
+        }
 
-            if (!file) {
-                return;
-            }
-
-            if (!file.type.startsWith('image/')) {
-                alert('Please select an image file.');
-                this.value = '';
-                return;
-            }
-
-            const reader = new FileReader();
-
-            reader.onload = function (event) {
-
-                logoPreview.src = event.target.result;
-                logoPreview.style.display = 'block';
-
-                if (logoPlaceholder) {
-                    logoPlaceholder.style.display = 'none';
-                }
-
-            };
-
-            reader.readAsDataURL(file);
-
-        });
-
-    }
-
+        const reader = new FileReader();
+        reader.onload = e => {
+            preview.src = e.target.result;
+            preview.style.display = 'block';
+            if (placeholder) placeholder.style.display = 'none';
+        };
+        reader.readAsDataURL(file);
+    });
+})();
 </script>
-
 
 </body>
 </html>

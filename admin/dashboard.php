@@ -1,7 +1,6 @@
 <?php
 
 require_once '../auth/auth_check.php';
-
 requireRole('admin');
 
 require_once '../includes/db.php';
@@ -10,7 +9,7 @@ $user = currentUser();
 
 /*
 |--------------------------------------------------------------------------
-| BUILD FULL NAME (first + middle + last)
+| USER NAME / INITIALS
 |--------------------------------------------------------------------------
 */
 
@@ -19,7 +18,6 @@ $middle_name = $user['middle_name'] ?? '';
 $last_name   = $user['last_name']   ?? '';
 
 $full_name = trim($first_name . ' ' . $middle_name . ' ' . $last_name);
-
 if ($full_name === '') {
     $full_name = 'Administrator';
 }
@@ -27,7 +25,6 @@ if ($full_name === '') {
 $initials = strtoupper(
     mb_substr($first_name, 0, 1) . mb_substr($last_name, 0, 1)
 );
-
 if ($initials === '') {
     $initials = 'AD';
 }
@@ -36,71 +33,207 @@ $profile_pic = $user['profile_pic'] ?? '';
 $user_role   = $user['role'] ?? 'admin';
 
 
-/*
-|--------------------------------------------------------------------------
-| DASHBOARD STATISTICS
-|--------------------------------------------------------------------------
-*/
+/* =========================================================================
+   HELPERS
+   ========================================================================= */
 
+function tableExists(mysqli $conn, string $table): bool
+{
+    $safe = mysqli_real_escape_string($conn, $table);
+    $res  = mysqli_query($conn, "SHOW TABLES LIKE '$safe'");
+    return $res && mysqli_num_rows($res) > 0;
+}
+
+function columnExists(mysqli $conn, string $table, string $column): bool
+{
+    $safe_t = mysqli_real_escape_string($conn, $table);
+    $safe_c = mysqli_real_escape_string($conn, $column);
+
+    $res = mysqli_query($conn, "SHOW COLUMNS FROM `$safe_t` LIKE '$safe_c'");
+    return $res && mysqli_num_rows($res) > 0;
+}
+
+function scalar(mysqli $conn, string $sql): int
+{
+    $res = mysqli_query($conn, $sql);
+    if (!$res) return 0;
+    $row = mysqli_fetch_row($res);
+    return (int) ($row[0] ?? 0);
+}
+
+
+/* =========================================================================
+   STATISTICS
+   ========================================================================= */
+
+/* -------- Active Students -------- */
 $total_students = 0;
+if (tableExists($conn, 'students')) {
+    $has_status = columnExists($conn, 'students', 'status');
+    $total_students = $has_status
+        ? scalar($conn, "SELECT COUNT(*) FROM students WHERE status = 'active'")
+        : scalar($conn, "SELECT COUNT(*) FROM students");
+}
+
+/* -------- Active Teachers -------- */
 $total_teachers = 0;
-$total_classes  = 0;
-$total_parents  = 0;
-$active_year    = 'Not Set';
+if (tableExists($conn, 'teachers') && tableExists($conn, 'users')) {
+    $has_emp_status = columnExists($conn, 'teachers', 'employment_status');
+    $total_teachers = $has_emp_status
+        ? scalar($conn, "SELECT COUNT(*) FROM teachers WHERE employment_status = 'active'")
+        : scalar($conn, "SELECT COUNT(*) FROM teachers");
+} elseif (tableExists($conn, 'users')) {
+    $total_teachers = scalar($conn, "SELECT COUNT(*) FROM users WHERE role = 'teacher'");
+}
 
+/* -------- Active Classes -------- */
+$total_classes = 0;
+if (tableExists($conn, 'classes')) {
+    $has_status = columnExists($conn, 'classes', 'status');
+    $total_classes = $has_status
+        ? scalar($conn, "SELECT COUNT(*) FROM classes WHERE status = 'active'")
+        : scalar($conn, "SELECT COUNT(*) FROM classes");
+}
 
-/* Students */
-$result = mysqli_query(
-    $conn,
-    "SELECT COUNT(*) AS total FROM students WHERE status = 'active'"
-);
+/* -------- Parents -------- */
+$total_parents = 0;
+if (tableExists($conn, 'users')) {
+    $total_parents = scalar($conn, "SELECT COUNT(*) FROM users WHERE role = 'parent'");
+}
 
-if ($result) {
-    $total_students = (int) mysqli_fetch_assoc($result)['total'];
+/* -------- Active Academic Year -------- */
+$active_year = 'Not Set';
+if (tableExists($conn, 'academic_years')) {
+    $has_status = columnExists($conn, 'academic_years', 'status');
+    $has_year   = columnExists($conn, 'academic_years', 'year');
+
+    if ($has_year && $has_status) {
+        $res = mysqli_query(
+            $conn,
+            "SELECT year FROM academic_years
+             WHERE status = 'active'
+             ORDER BY year DESC
+             LIMIT 1"
+        );
+        if ($res && $row = mysqli_fetch_assoc($res)) {
+            $active_year = $row['year'];
+        }
+    } elseif ($has_year) {
+        $res = mysqli_query(
+            $conn,
+            "SELECT year FROM academic_years ORDER BY year DESC LIMIT 1"
+        );
+        if ($res && $row = mysqli_fetch_assoc($res)) {
+            $active_year = $row['year'];
+        }
+    }
 }
 
 
-/* Teachers (from users table where role = 'teacher') */
-$result = mysqli_query(
-    $conn,
-    "SELECT COUNT(*) AS total FROM users WHERE role = 'teacher' AND status = 'active'"
-);
+/* =========================================================================
+   CLASSES — pulled directly from `classes` table
+   ========================================================================= */
 
-if ($result) {
-    $total_teachers = (int) mysqli_fetch_assoc($result)['total'];
+$classes_list = [];
+$max_class_count = 1;
+
+if (tableExists($conn, 'classes')) {
+
+    $has_students = tableExists($conn, 'students');
+    $has_c_status = columnExists($conn, 'classes', 'status');
+    $has_s_status = $has_students && columnExists($conn, 'students', 'status');
+
+    $status_where = $has_c_status ? "WHERE c.status = 'active'" : "";
+
+    if ($has_students) {
+
+        /* Join students to count active students per class */
+        $student_status = $has_s_status ? "AND s.status = 'active'" : "";
+
+        $q = "
+            SELECT
+                c.class_id,
+                c.class_name,
+                c.class_level,
+                c.stream,
+                c.status,
+                COUNT(s.student_id) AS student_count
+            FROM classes c
+            LEFT JOIN students s
+                ON s.class_id = c.class_id
+                $student_status
+            $status_where
+            GROUP BY c.class_id
+            ORDER BY c.class_level ASC, c.class_name ASC, c.stream ASC
+        ";
+
+    } else {
+
+        /* No students table — just list classes */
+        $q = "
+            SELECT
+                class_id,
+                class_name,
+                class_level,
+                stream,
+                status,
+                0 AS student_count
+            FROM classes c
+            $status_where
+            ORDER BY class_level ASC, class_name ASC, stream ASC
+        ";
+    }
+
+    $res = mysqli_query($conn, $q);
+
+    if ($res) {
+        while ($row = mysqli_fetch_assoc($res)) {
+            $classes_list[] = $row;
+
+            if ((int)$row['student_count'] > $max_class_count) {
+                $max_class_count = (int)$row['student_count'];
+            }
+        }
+    }
 }
 
 
-/* Classes */
-$result = mysqli_query(
-    $conn,
-    "SELECT COUNT(*) AS total FROM classes WHERE status = 'active'"
-);
+/* =========================================================================
+   RECENT STUDENTS — last 5 added
+   ========================================================================= */
 
-if ($result) {
-    $total_classes = (int) mysqli_fetch_assoc($result)['total'];
-}
+$recent_students = [];
 
+if (tableExists($conn, 'students')) {
 
-/* Parents */
-$result = mysqli_query(
-    $conn,
-    "SELECT COUNT(*) AS total FROM users WHERE role = 'parent' AND status = 'active'"
-);
+    $cols = [];
+    $col_check = mysqli_query($conn, "SHOW COLUMNS FROM students");
+    if ($col_check) {
+        while ($c = mysqli_fetch_assoc($col_check)) {
+            $cols[] = $c['Field'];
+        }
+    }
 
-if ($result) {
-    $total_parents = (int) mysqli_fetch_assoc($result)['total'];
-}
+    $name_col = in_array('full_name', $cols, true)   ? 'full_name'
+              : (in_array('first_name', $cols, true) ? 'first_name'
+              : 'student_id');
 
+    $date_col = in_array('created_at', $cols, true)      ? 'created_at'
+              : (in_array('admission_date', $cols, true) ? 'admission_date'
+              : null);
 
-/* Active Academic Year */
-$result = mysqli_query(
-    $conn,
-    "SELECT year FROM academic_years WHERE status = 'active' ORDER BY year DESC LIMIT 1"
-);
+    $order_by = $date_col ? "ORDER BY $date_col DESC" : "";
 
-if ($result && mysqli_num_rows($result) > 0) {
-    $active_year = mysqli_fetch_assoc($result)['year'];
+    $q = "SELECT student_id, $name_col AS student_name" .
+         ($date_col ? ", $date_col AS created_date" : "") .
+         " FROM students $order_by LIMIT 5";
+
+    $res = mysqli_query($conn, $q);
+    if ($res) {
+        while ($row = mysqli_fetch_assoc($res)) {
+            $recent_students[] = $row;
+        }
+    }
 }
 
 ?>
@@ -127,12 +260,12 @@ if ($result && mysqli_num_rows($result) > 0) {
             --border: #e4e6eb;
             --success: #3e7655;
             --warning: #9a7422;
-            --sidebar-w: 255px;
+            --sidebar-w: 250px;
             --sidebar-collapsed: 78px;
             --topbar-h: 78px;
         }
 
-        html, body { -webkit-text-size-adjust: 100%; }
+        html, body { -webkit-text-size-adjust: 100%; overflow-x: hidden; }
 
         body {
             font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
@@ -140,14 +273,78 @@ if ($result && mysqli_num_rows($result) > 0) {
             color: var(--text);
             min-height: 100vh;
             min-height: 100dvh;
-            overflow-x: hidden;
         }
 
-       
+        body.no-scroll { overflow: hidden; }
 
-        /* =================================
+        /* =========================================================
+           MOBILE TOPBAR
+        ========================================================= */
+        .mobile-topbar {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 58px;
+            background: var(--navy);
+            color: var(--white);
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            z-index: 1100;
+            box-shadow: 0 2px 8px rgba(0,0,0,.15);
+        }
+
+        .mobile-topbar .brand {
+            font-size: 14px;
+            font-weight: 800;
+            letter-spacing: .5px;
+        }
+
+        .mobile-topbar .brand span { color: var(--gold-light); }
+
+        .hamburger {
+            width: 40px;
+            height: 40px;
+            border: none;
+            background: rgba(255,255,255,.08);
+            border-radius: 6px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            cursor: pointer;
+            padding: 0;
+        }
+
+        .hamburger span {
+            display: block;
+            width: 18px;
+            height: 2px;
+            background: var(--white);
+            border-radius: 2px;
+            transition: .2s ease;
+        }
+
+        .hamburger.active span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+        .hamburger.active span:nth-child(2) { opacity: 0; }
+        .hamburger.active span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,.45);
+            z-index: 1050;
+            opacity: 0;
+            transition: opacity .25s ease;
+        }
+
+        .sidebar-overlay.open { display: block; opacity: 1; }
+
+        /* =========================================================
            MAIN CONTENT
-        ================================= */
+        ========================================================= */
         .main-content {
             margin-left: var(--sidebar-w);
             padding: calc(var(--topbar-h) + 30px) 30px 35px;
@@ -161,6 +358,7 @@ if ($result && mysqli_num_rows($result) > 0) {
             font-size: 25px;
             font-weight: 700;
             line-height: 1.25;
+            overflow-wrap: anywhere;
         }
 
         .welcome p {
@@ -169,9 +367,9 @@ if ($result && mysqli_num_rows($result) > 0) {
             margin-top: 5px;
         }
 
-        /* =================================
+        /* =========================================================
            STAT CARDS
-        ================================= */
+        ========================================================= */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
@@ -187,6 +385,7 @@ if ($result && mysqli_num_rows($result) > 0) {
             position: relative;
             overflow: hidden;
             transition: .25s ease;
+            min-width: 0;
         }
 
         .stat-card:hover {
@@ -220,6 +419,7 @@ if ($result && mysqli_num_rows($result) > 0) {
             font-weight: 750;
             margin-top: 7px;
             line-height: 1.1;
+            overflow-wrap: anywhere;
         }
 
         .stat-description {
@@ -235,9 +435,9 @@ if ($result && mysqli_num_rows($result) > 0) {
             margin-top: 14px;
         }
 
-        /* =================================
+        /* =========================================================
            DASHBOARD GRID
-        ================================= */
+        ========================================================= */
         .dashboard-grid {
             display: grid;
             grid-template-columns: 1.35fr .65fr;
@@ -273,10 +473,10 @@ if ($result && mysqli_num_rows($result) > 0) {
 
         .panel-body { padding: 20px; }
 
-        /* =================================
-           CLASS LEVELS
-        ================================= */
-        .level-row {
+        /* =========================================================
+           CLASS ROWS
+        ========================================================= */
+        .class-row {
             display: flex;
             align-items: center;
             gap: 12px;
@@ -284,20 +484,29 @@ if ($result && mysqli_num_rows($result) > 0) {
             border-bottom: 1px solid #f0f1f3;
         }
 
-        .level-row:last-child { border-bottom: none; }
+        .class-row:last-child { border-bottom: none; }
 
-        .level-name {
-            color: var(--text);
-            font-size: 12.5px;
-            font-weight: 600;
+        .class-name-wrap {
             flex: 1;
             min-width: 0;
+        }
+
+        .class-name {
+            color: var(--text);
+            font-size: 12.5px;
+            font-weight: 650;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
 
-        .level-bar {
+        .class-meta {
+            color: var(--muted);
+            font-size: 10px;
+            margin-top: 2px;
+        }
+
+        .class-bar {
             width: 90px;
             height: 5px;
             background: #eef0f3;
@@ -306,166 +515,197 @@ if ($result && mysqli_num_rows($result) > 0) {
             flex-shrink: 0;
         }
 
-        .level-fill {
+        .class-fill {
             height: 100%;
             background: var(--gold);
             border-radius: 10px;
             transition: width .4s ease;
         }
 
-        .level-count {
+        .class-count {
             color: var(--navy);
             font-size: 12px;
             font-weight: 700;
             flex-shrink: 0;
-            min-width: 70px;
+            min-width: 60px;
             text-align: right;
         }
 
-        /* =================================
-           QUICK ACTIONS
-        ================================= */
-        .quick-action {
+        /* =========================================================
+           RECENT STUDENTS
+        ========================================================= */
+        .activity-item {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 14px 0;
+            gap: 11px;
+            padding: 11px 0;
             border-bottom: 1px solid #f0f1f3;
         }
 
-        .quick-action:last-child { border-bottom: none; }
+        .activity-item:last-child { border-bottom: none; }
 
-        .action-info {
-            min-width: 0;
-            flex: 1;
+        .activity-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--navy);
+            color: var(--gold-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 700;
+            flex-shrink: 0;
         }
 
-        .action-info strong {
-            display: block;
+        .activity-info { flex: 1; min-width: 0; }
+
+        .activity-name {
             color: var(--navy);
             font-size: 12.5px;
+            font-weight: 650;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
-        .action-info span {
-            display: block;
+        .activity-meta {
             color: var(--muted);
             font-size: 10.5px;
-            margin-top: 3px;
+            margin-top: 2px;
         }
 
-        .action-link {
-            color: var(--gold);
-            font-size: 11px;
-            font-weight: 700;
-            text-decoration: none;
-            white-space: nowrap;
-            flex-shrink: 0;
-            padding: 6px 4px;
-            -webkit-tap-highlight-color: transparent;
+        .empty-note {
+            text-align: center;
+            padding: 22px 10px;
+            color: var(--muted);
+            font-size: 11.5px;
         }
 
-        .action-link:hover { color: var(--navy); }
+        /* =========================================================
+           RESPONSIVE
+        ========================================================= */
 
-        /* =================================
-           TABLET
-        ================================= */
+        @media (min-width: 801px) {
+            body.sidebar-collapsed .main-content {
+                margin-left: var(--sidebar-collapsed);
+            }
+        }
+
+        /* Tablet */
         @media (max-width: 1100px) {
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
             .dashboard-grid { grid-template-columns: 1fr; }
         }
 
-        /* =================================
-           MOBILE — drawer sidebar
-        ================================= */
+        /* Mobile */
         @media (max-width: 800px) {
-            .sidebar {
-                width: 280px;
-                transform: translateX(-100%);
-                box-shadow: 5px 0 25px rgba(0,0,0,.25);
-            }
 
-            body.sidebar-mobile-open .sidebar {
-                transform: translateX(0);
-            }
-
-            .topbar { left: 0; padding: 0 16px; }
+            .mobile-topbar { display: flex; }
 
             .main-content {
                 margin-left: 0;
-                padding: calc(var(--topbar-h) + 22px) 16px 25px;
+                padding: 78px 16px 30px;
             }
 
-            /* Cancel desktop collapsed state on mobile */
-            body.sidebar-collapsed .sidebar { width: 280px; }
-            body.sidebar-collapsed .topbar { left: 0; }
-            body.sidebar-collapsed .main-content { margin-left: 0; }
-            body.sidebar-collapsed .brand-text,
-            body.sidebar-collapsed .nav-section,
-            body.sidebar-collapsed .nav-item span:not(.nav-icon),
-            body.sidebar-collapsed .logout-item span:not(.nav-icon) {
-                display: block;
+            .welcome { margin-bottom: 20px; }
+            .welcome h1 { font-size: 21px; }
+            .welcome p  { font-size: 12px; line-height: 1.45; }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+                margin-bottom: 18px;
             }
-        }
 
-        /* =================================
-           SMALL PHONES
-        ================================= */
-        @media (max-width: 550px) {
-            :root { --topbar-h: 66px; }
+            .stat-card { padding: 16px; }
+            .stat-value { font-size: 22px; }
+            .stat-label { font-size: 9px; letter-spacing: .7px; }
+            .stat-description { font-size: 10px; }
+            .stat-accent { margin-top: 10px; }
 
-            .page-title { font-size: 14px; }
-            .page-subtitle { font-size: 9.5px; }
-
-            .user-info { display: none; }
-
-            .profile-image,
-            .profile-placeholder { width: 36px; height: 36px; font-size: 12px; }
-
-            .welcome h1 { font-size: 20px; }
-            .welcome p { font-size: 12px; }
-
-            .stat-card { padding: 18px; }
-            .stat-value { font-size: 26px; }
-
-            .panel-header { padding: 15px 16px; }
+            .panel-header { padding: 14px 16px; }
             .panel-body { padding: 16px; }
 
-            .level-bar { display: none; }
-            .level-count { min-width: auto; }
-
-            .stats-grid { gap: 12px; }
-            .dashboard-grid { gap: 14px; }
+            .class-row { padding: 12px 0; }
+            .class-name { font-size: 12px; }
+            .class-count { font-size: 11.5px; }
         }
 
-        /* =================================
-           SAFE AREA (iPhone notch)
-        ================================= */
-        @supports (padding: max(0px)) {
-            .topbar {
-                padding-left: max(16px, env(safe-area-inset-left));
-                padding-right: max(16px, env(safe-area-inset-right));
+        /* Small phone */
+        @media (max-width: 550px) {
+
+            .main-content { padding: 74px 14px 24px; }
+
+            .welcome h1 { font-size: 19px; }
+            .welcome p  { font-size: 11.5px; }
+
+            .stats-grid { gap: 8px; }
+
+            .stat-card {
+                padding: 14px;
+                border-radius: 9px;
             }
 
-            .main-content {
-                padding-left: max(16px, env(safe-area-inset-left));
-                padding-right: max(16px, env(safe-area-inset-right));
+            .stat-value { font-size: 20px; }
+            .stat-description { font-size: 9.5px; }
+
+            /* Hide bars on small phones */
+            .class-bar { display: none; }
+            .class-count { min-width: auto; }
+        }
+
+        /* Very small phone */
+        @media (max-width: 400px) {
+            .stats-grid { grid-template-columns: 1fr; }
+
+            .stat-card {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding: 12px 14px;
             }
 
-            .sidebar-nav {
-                padding-bottom: max(20px, env(safe-area-inset-bottom));
+            .stat-label { order: 1; margin: 0; font-size: 10px; }
+            .stat-value { order: 2; margin: 0; font-size: 20px; }
+            .stat-description { display: none; }
+            .stat-accent { display: none; }
+
+            .class-count { font-size: 11px; min-width: auto; }
+        }
+
+        /* Safe area */
+        @media (max-width: 800px) {
+            @supports (padding: max(0px)) {
+                .main-content {
+                    padding-left:  max(14px, env(safe-area-inset-left));
+                    padding-right: max(14px, env(safe-area-inset-right));
+                    padding-bottom: max(24px, env(safe-area-inset-bottom));
+                }
             }
+        }
+
+        /* Landscape phones */
+        @media (max-height: 500px) and (max-width: 900px) {
+            .main-content { padding-top: 74px; }
+            .stats-grid { margin-bottom: 12px; }
         }
     </style>
 </head>
 <body>
 
-<!-- SIDEBAR OVERLAY (mobile) -->
+<!-- MOBILE TOPBAR -->
+<div class="mobile-topbar">
+    <div class="brand">PSRMS <span>Admin</span></div>
+    <button type="button" class="hamburger" id="hamburgerBtn" aria-label="Menu">
+        <span></span><span></span><span></span>
+    </button>
+</div>
+
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
 <?php include 'admin_sidebar.php'; ?>
-
-<?php include 'admin_header.php'; ?>
+<?php include '../includes/topbar.php'; ?>
 
 <main class="main-content">
 
@@ -501,127 +741,110 @@ if ($result && mysqli_num_rows($result) > 0) {
 
         <div class="stat-card">
             <div class="stat-label">Academic Year</div>
-            <div class="stat-value"><?php echo htmlspecialchars($active_year); ?></div>
+            <div class="stat-value" style="font-size:22px;">
+                <?php echo htmlspecialchars($active_year); ?>
+            </div>
             <div class="stat-description">Current active year</div>
             <div class="stat-accent"></div>
         </div>
 
     </section>
 
-    <!-- LOWER DASHBOARD -->
+    <!-- CLASSES + RECENT STUDENTS -->
     <section class="dashboard-grid">
 
-        <!-- SCHOOL LEVELS -->
+        <!-- CLASSES PANEL — real data from `classes` table -->
         <div class="panel">
             <div class="panel-header">
-                <h2>School Classes</h2>
-                <span>Kindergarten → Standard 7</span>
+                <h2>Classes</h2>
+                <span>
+                    <?php
+                    echo count($classes_list);
+                    echo count($classes_list) === 1 ? ' class' : ' classes';
+                    ?>
+                </span>
             </div>
 
             <div class="panel-body">
-                <?php
-                $levels = [
-                    'Kindergarten 1',
-                    'Kindergarten 2',
-                    'Standard 1',
-                    'Standard 2',
-                    'Standard 3',
-                    'Standard 4',
-                    'Standard 5',
-                    'Standard 6',
-                    'Standard 7',
-                ];
 
-                /* First pass — collect counts so we can scale bars */
-                $counts = [];
-                $max    = 1;
+                <?php if (empty($classes_list)): ?>
 
-                foreach ($levels as $level) {
-                    $safe = mysqli_real_escape_string($conn, $level);
+                    <div class="empty-note">No classes found.</div>
 
-                    $q = "
-                        SELECT COUNT(*) AS total
-                        FROM students s
-                        INNER JOIN classes c ON s.class_id = c.class_id
-                        WHERE c.class_name = '$safe'
-                        AND s.status = 'active'
-                    ";
+                <?php else: ?>
 
-                    $r = mysqli_query($conn, $q);
+                    <?php foreach ($classes_list as $class):
+                        $count = (int) $class['student_count'];
+                        $pct   = $max_class_count > 0
+                                 ? round(($count / $max_class_count) * 100)
+                                 : 0;
+                    ?>
+                        <div class="class-row">
+                            <div class="class-name-wrap">
+                                <div class="class-name">
+                                    <?php echo htmlspecialchars($class['class_name']); ?>
+                                    <?php if (!empty($class['stream'])): ?>
+                                        — <?php echo htmlspecialchars($class['stream']); ?>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="class-meta">
+                                    <?php
+                                    echo 'Level ' . htmlspecialchars($class['class_level'] ?? '—');
+                                    ?>
+                                </div>
+                            </div>
 
-                    $c = $r ? (int) mysqli_fetch_assoc($r)['total'] : 0;
+                            <div class="class-bar">
+                                <div class="class-fill" style="width: <?php echo $pct; ?>%;"></div>
+                            </div>
 
-                    $counts[$level] = $c;
-
-                    if ($c > $max) { $max = $c; }
-                }
-
-                /* Second pass — render rows with proportional bars */
-                foreach ($levels as $level):
-                    $count = $counts[$level];
-                    $pct   = $max > 0 ? round(($count / $max) * 100) : 0;
-                ?>
-                    <div class="level-row">
-                        <span class="level-name"><?php echo htmlspecialchars($level); ?></span>
-                        <div class="level-bar">
-                            <div class="level-fill" style="width: <?php echo $pct; ?>%;"></div>
+                            <span class="class-count">
+                                <?php echo $count; ?>
+                                student<?php echo $count === 1 ? '' : 's'; ?>
+                            </span>
                         </div>
-                        <span class="level-count">
-                            <?php echo $count; ?> student<?php echo $count === 1 ? '' : 's'; ?>
-                        </span>
-                    </div>
-                <?php endforeach; ?>
+                    <?php endforeach; ?>
+
+                <?php endif; ?>
+
             </div>
         </div>
 
-        <!-- QUICK ACTIONS -->
+        <!-- RECENT STUDENTS -->
         <div class="panel">
             <div class="panel-header">
-                <h2>Quick Actions</h2>
-                <span>Administration</span>
+                <h2>Recent Students</h2>
+                <span>Last 5 added</span>
             </div>
 
             <div class="panel-body">
 
-                <div class="quick-action">
-                    <div class="action-info">
-                        <strong>Add Teacher</strong>
-                        <span>Register teaching staff</span>
-                    </div>
-                    <a href="teachers.php" class="action-link">Open →</a>
-                </div>
+                <?php if (empty($recent_students)): ?>
 
-                <div class="quick-action">
-                    <div class="action-info">
-                        <strong>Manage Classes</strong>
-                        <span>Classes &amp; class teachers</span>
-                    </div>
-                    <a href="classes.php" class="action-link">Open →</a>
-                </div>
+                    <div class="empty-note">No recent students to display.</div>
 
-                <div class="quick-action">
-                    <div class="action-info">
-                        <strong>Manage Subjects</strong>
-                        <span>School curriculum</span>
-                    </div>
-                    <a href="subjects.php" class="action-link">Open →</a>
-                </div>
+                <?php else: ?>
 
-                <div class="quick-action">
-                    <div class="action-info">
-                        <strong>Academic Year</strong>
-                        <span>Years &amp; terms</span>
-                    </div>
-                    <a href="academic_years.php" class="action-link">Open →</a>
-                </div>
+                    <?php foreach ($recent_students as $s):
+                        $name    = $s['student_name'] ?? '—';
+                        $initial = strtoupper(mb_substr($name, 0, 1));
+                    ?>
+                        <div class="activity-item">
+                            <div class="activity-avatar">
+                                <?php echo htmlspecialchars($initial); ?>
+                            </div>
+                            <div class="activity-info">
+                                <div class="activity-name">
+                                    <?php echo htmlspecialchars($name); ?>
+                                </div>
+                                <div class="activity-meta">
+                                    ID #<?php echo (int) $s['student_id']; ?>
+                                </div>
+                            </div>
+                        </div>
+                    <?php endforeach; ?>
 
-                <div class="quick-action">
-                    <div class="action-info">
-                        <strong>Parents</strong>
-                        <span>Registered parent accounts</span>
-                    </div>
-                    <a href="parents.php" class="action-link">Open →</a>
-                </div>
+                <?php endif; ?>
 
             </div>
         </div>
@@ -630,55 +853,68 @@ if ($result && mysqli_num_rows($result) > 0) {
 
 </main>
 
+
 <script>
-    const body       = document.body;
-    const overlay    = document.getElementById('sidebarOverlay');
-    const toggleBtn  = document.getElementById('sidebarToggle');
+/* =========================================================================
+   MOBILE DRAWER SIDEBAR
+   ========================================================================= */
 
-    function isMobile() {
-        return window.matchMedia('(max-width: 800px)').matches;
-    }
+const hamburgerBtn   = document.getElementById('hamburgerBtn');
+const sidebarOverlay = document.getElementById('sidebarOverlay');
 
-    function toggleSidebar() {
-        if (isMobile()) {
-            body.classList.toggle('sidebar-mobile-open');
+function openSidebar() {
+    document.body.classList.add('no-scroll');
+    document.body.classList.add('sidebar-mobile-open');
+    sidebarOverlay.classList.add('open');
+
+    const sidebar = document.querySelector('.admin-sidebar, #sidebar, .sidebar, #adminSidebar');
+    if (sidebar) sidebar.classList.add('open');
+
+    if (hamburgerBtn) hamburgerBtn.classList.add('active');
+}
+
+function closeSidebar() {
+    document.body.classList.remove('sidebar-mobile-open');
+    sidebarOverlay.classList.remove('open');
+
+    const sidebar = document.querySelector('.admin-sidebar, #sidebar, .sidebar, #adminSidebar');
+    if (sidebar) sidebar.classList.remove('open');
+
+    if (hamburgerBtn) hamburgerBtn.classList.remove('active');
+
+    document.body.classList.remove('no-scroll');
+}
+
+if (hamburgerBtn) {
+    hamburgerBtn.addEventListener('click', function () {
+        if (sidebarOverlay.classList.contains('open')) {
+            closeSidebar();
         } else {
-            body.classList.toggle('sidebar-collapsed');
-        }
-    }
-
-    if (toggleBtn) {
-        toggleBtn.addEventListener('click', toggleSidebar);
-    }
-
-    if (overlay) {
-        overlay.addEventListener('click', () => {
-            body.classList.remove('sidebar-mobile-open');
-        });
-    }
-
-    // Close drawer when a nav link is tapped
-    document.querySelectorAll('.sidebar .nav-item, .sidebar .logout-item').forEach(link => {
-        link.addEventListener('click', () => {
-            if (isMobile()) {
-                body.classList.remove('sidebar-mobile-open');
-            }
-        });
-    });
-
-    // Close drawer on Escape
-    document.addEventListener('keydown', e => {
-        if (e.key === 'Escape') {
-            body.classList.remove('sidebar-mobile-open');
+            openSidebar();
         }
     });
+}
 
-    // Clean state when resizing
-    window.addEventListener('resize', () => {
-        if (!isMobile()) {
-            body.classList.remove('sidebar-mobile-open');
-        }
+if (sidebarOverlay) {
+    sidebarOverlay.addEventListener('click', closeSidebar);
+}
+
+/* Escape closes drawer */
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeSidebar();
+});
+
+/* Auto-close on resize to desktop */
+window.addEventListener('resize', function () {
+    if (window.innerWidth > 800) closeSidebar();
+});
+
+/* Close drawer when a sidebar link is tapped */
+document.querySelectorAll('.sidebar .nav-item, .sidebar .logout-item').forEach(link => {
+    link.addEventListener('click', () => {
+        if (window.innerWidth <= 800) closeSidebar();
     });
+});
 </script>
 
 </body>

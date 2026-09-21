@@ -1,4 +1,5 @@
 <?php
+session_start();
 
 require_once '../auth/auth_check.php';
 requireRole('admin');
@@ -25,13 +26,15 @@ $classes = [];
 
 $class_result = mysqli_query(
     $conn,
-    "SELECT class_id, class_name, stream
+    "SELECT class_id, class_name, stream, class_level
      FROM classes
-     ORDER BY class_name ASC, stream ASC"
+     ORDER BY class_level ASC, class_name ASC, stream ASC"
 );
 
 if ($class_result) {
     while ($row = mysqli_fetch_assoc($class_result)) {
+        $row['label'] = $row['class_name']
+            . ($row['stream'] ? ' - ' . $row['stream'] : '');
         $classes[] = $row;
     }
 }
@@ -45,7 +48,6 @@ if ($class_result) {
 $sql = "
     SELECT
         s.student_id,
-        s.registration_no,
         s.admission_no,
         s.full_name,
         s.gender,
@@ -54,6 +56,7 @@ $sql = "
         s.admission_date,
         s.photo,
         s.status,
+        s.created_at,
         c.class_name,
         c.stream
     FROM students s
@@ -65,18 +68,11 @@ $params = [];
 $types  = '';
 
 if ($search !== '') {
-    $sql .= "
-        AND (
-            s.full_name LIKE ?
-            OR s.registration_no LIKE ?
-            OR s.admission_no LIKE ?
-        )
-    ";
+    $sql .= " AND (s.full_name LIKE ? OR s.admission_no LIKE ?) ";
     $val      = '%' . $search . '%';
     $params[] = $val;
     $params[] = $val;
-    $params[] = $val;
-    $types   .= 'sss';
+    $types   .= 'ss';
 }
 
 if ($class_id !== '') {
@@ -97,19 +93,14 @@ $stmt     = mysqli_prepare($conn, $sql);
 $students = [];
 
 if ($stmt) {
-
     if (!empty($params)) {
         mysqli_stmt_bind_param($stmt, $types, ...$params);
     }
-
     mysqli_stmt_execute($stmt);
-
     $result = mysqli_stmt_get_result($stmt);
-
     while ($row = mysqli_fetch_assoc($result)) {
         $students[] = $row;
     }
-
     mysqli_stmt_close($stmt);
 }
 
@@ -169,12 +160,12 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             --green: #3e7655;
             --red: #9b4747;
             --orange: #9a7422;
-            --sidebar-w: 255px;
-            --sidebar-collapsed: 78px;
-            --topbar-h: 78px;
+            --blue: #2f5d8f;
+            --sidebar-w: 250px;
+            --topbar-h: 64px;
         }
 
-        html, body { -webkit-text-size-adjust: 100%; }
+        html, body { -webkit-text-size-adjust: 100%; overflow-x: hidden; }
 
         body {
             font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Arial, sans-serif;
@@ -182,24 +173,18 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             color: var(--text);
             min-height: 100vh;
             min-height: 100dvh;
-            overflow-x: hidden;
         }
 
-        /* =================================================
-           MAIN CONTENT
-        ================================================= */
+        body.no-scroll { overflow: hidden; }
+
         .main-content {
             margin-left: var(--sidebar-w);
             padding: calc(var(--topbar-h) + 30px) 30px 40px;
             transition: margin-left .25s ease;
-            overflow-x: hidden;
         }
 
-        /* Desktop collapsed state */
         @media (min-width: 801px) {
-            body.sidebar-collapsed .main-content {
-                margin-left: var(--sidebar-collapsed);
-            }
+            body.sidebar-collapsed .main-content { margin-left: 78px; }
         }
 
         /* =================================================
@@ -241,21 +226,13 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             -webkit-tap-highlight-color: transparent;
         }
 
-        .add-button:hover {
-            background: var(--navy-dark);
-            transform: translateY(-1px);
-        }
-
+        .add-button:hover { background: var(--navy-dark); transform: translateY(-1px); }
         .add-button:active { transform: scale(.98); }
 
-        .add-icon {
-            color: var(--gold-light);
-            font-size: 16px;
-            line-height: 1;
-        }
+        .add-icon { color: var(--gold-light); font-size: 16px; line-height: 1; }
 
         /* =================================================
-           STATISTICS
+           STATS
         ================================================= */
         .stats-grid {
             display: grid;
@@ -303,7 +280,7 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
         }
 
         /* =================================================
-           FILTER PANEL
+           FILTER
         ================================================= */
         .filter-panel {
             background: var(--white);
@@ -350,9 +327,7 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             align-items: end;
         }
 
-        .filter-group {
-            min-width: 0;
-        }
+        .filter-group { min-width: 0; }
 
         .filter-group label {
             display: block;
@@ -378,7 +353,8 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             appearance: none;
         }
 
-        select.filter-control {
+        select.filter-control,
+        select.form-control {
             background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23747d8e' stroke-width='2'%3e%3cpolyline points='6 9 12 15 18 9'/%3e%3c/svg%3e");
             background-repeat: no-repeat;
             background-position: right 12px center;
@@ -408,7 +384,6 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
         }
 
         .filter-button:hover { background: var(--navy-dark); }
-        .filter-button:active { transform: scale(.98); }
 
         .reset-button {
             height: 42px;
@@ -426,10 +401,7 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             transition: .2s ease;
         }
 
-        .reset-button:hover {
-            color: var(--navy);
-            border-color: #c8ccd3;
-        }
+        .reset-button:hover { color: var(--navy); border-color: #c8ccd3; }
 
         /* =================================================
            RESULTS BAR
@@ -443,18 +415,11 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             flex-wrap: wrap;
         }
 
-        .results-bar h2 {
-            color: var(--navy);
-            font-size: 15px;
-        }
-
-        .results-count {
-            color: var(--muted);
-            font-size: 11.5px;
-        }
+        .results-bar h2 { color: var(--navy); font-size: 15px; }
+        .results-count { color: var(--muted); font-size: 11.5px; }
 
         /* =================================================
-           TABLE (desktop)
+           TABLE
         ================================================= */
         .table-panel {
             background: var(--white);
@@ -537,29 +502,12 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             overflow-wrap: anywhere;
         }
 
-        .student-id {
-            color: var(--muted);
-            font-size: 10px;
-            margin-top: 2px;
-        }
+        .student-id { color: var(--muted); font-size: 10px; margin-top: 2px; }
 
-        .registration {
-            color: var(--navy);
-            font-weight: 600;
-        }
-
-        .admission { color: var(--muted); }
-
-        .class-name {
-            color: var(--text);
-            font-weight: 600;
-        }
-
-        .stream {
-            color: var(--muted);
-            font-size: 10px;
-            margin-left: 3px;
-        }
+        .admission    { color: var(--navy); font-weight: 600; }
+        .muted-value  { color: var(--muted); }
+        .class-name   { color: var(--text); font-weight: 600; }
+        .stream       { color: var(--muted); font-size: 10px; margin-left: 3px; }
 
         /* =================================================
            STATUS
@@ -582,37 +530,19 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             border-radius: 50%;
         }
 
-        .status-active {
-            color: var(--green);
-            background: #eef6f0;
-        }
+        .status-active      { color: var(--green);  background: #eef6f0; }
         .status-active::before { background: var(--green); }
-
-        .status-inactive {
-            color: var(--orange);
-            background: #faf5e8;
-        }
+        .status-inactive    { color: var(--orange); background: #faf5e8; }
         .status-inactive::before { background: var(--orange); }
-
-        .status-graduated {
-            color: var(--navy);
-            background: #eef0f5;
-        }
+        .status-graduated   { color: var(--navy);   background: #eef0f5; }
         .status-graduated::before { background: var(--navy); }
-
-        .status-transferred {
-            color: var(--red);
-            background: #faf0f0;
-        }
+        .status-transferred { color: var(--red);    background: #faf0f0; }
         .status-transferred::before { background: var(--red); }
 
         /* =================================================
            ACTIONS
         ================================================= */
-        .actions {
-            display: flex;
-            gap: 6px;
-        }
+        .actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
         .action-btn {
             min-height: 32px;
@@ -627,19 +557,26 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             text-decoration: none;
             font-size: 11px;
             font-weight: 700;
+            cursor: pointer;
+            font-family: inherit;
             transition: .2s ease;
             -webkit-tap-highlight-color: transparent;
         }
 
-        .action-btn:hover {
-            border-color: var(--gold);
-            color: var(--gold);
-        }
-
+        .action-btn:hover { border-color: var(--gold); color: var(--gold); }
         .action-btn:active { transform: scale(.95); }
 
+        .action-btn.transfer {
+            color: var(--orange);
+            border-color: #ecd9a8;
+        }
+        .action-btn.transfer:hover {
+            background: #faf5e8;
+            border-color: var(--orange);
+        }
+
         /* =================================================
-           MOBILE CARD LIST
+           MOBILE CARDS
         ================================================= */
         .card-list { display: none; }
 
@@ -649,7 +586,6 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             border-radius: 10px;
             padding: 16px;
             margin-bottom: 12px;
-            transition: .2s ease;
         }
 
         .student-card:last-child { margin-bottom: 0; }
@@ -664,7 +600,6 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
         }
 
         .student-card-top .student-name { font-size: 14px; }
-
         .student-card-top .student-id { font-size: 10.5px; }
 
         .student-card-meta {
@@ -674,9 +609,7 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             margin-bottom: 14px;
         }
 
-        .meta-item {
-            min-width: 0;
-        }
+        .meta-item { min-width: 0; }
 
         .meta-item .k {
             display: block;
@@ -698,7 +631,7 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
 
         .student-card-actions {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: 1fr 1fr 1fr;
             gap: 8px;
             padding-top: 14px;
             border-top: 1px solid #f0f1f3;
@@ -706,70 +639,305 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
 
         .student-card-actions .action-btn {
             min-height: 40px;
-            font-size: 12.5px;
+            font-size: 11.5px;
             justify-content: center;
+            padding: 0 8px;
         }
 
         /* =================================================
-           EMPTY STATE
+           EMPTY
         ================================================= */
-        .empty-state {
-            padding: 55px 20px;
-            text-align: center;
-        }
+        .empty-state { padding: 55px 20px; text-align: center; }
 
         .empty-icon {
-            width: 54px;
-            height: 54px;
+            width: 54px; height: 54px;
             margin: 0 auto 14px;
             border-radius: 50%;
             background: #f3f2ed;
             color: var(--gold);
-            display: flex;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 15px;
+        }
+
+        .empty-state h3 { color: var(--navy); font-size: 14.5px; margin-bottom: 5px; }
+        .empty-state p  { color: var(--muted); font-size: 12px; }
+
+        /* =================================================
+           MODAL (shared)
+        ================================================= */
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            background: rgba(16, 24, 43, .55);
+            display: none;
             align-items: center;
             justify-content: center;
-            font-weight: 700;
-            font-size: 15px;
+            padding: 20px;
+            opacity: 0;
+            transition: opacity .2s ease;
         }
 
-        .empty-state h3 {
-            color: var(--navy);
-            font-size: 14.5px;
-            margin-bottom: 5px;
+        .modal-backdrop.open { display: flex; opacity: 1; }
+
+        .modal {
+            background: var(--white);
+            border-radius: 14px;
+            width: 100%;
+            max-width: 560px;
+            max-height: 92vh;
+            overflow-y: auto;
+            box-shadow: 0 30px 60px rgba(0,0,0,.25);
+            display: flex;
+            flex-direction: column;
+            animation: pop .18s ease-out;
         }
 
-        .empty-state p {
+        @keyframes pop {
+            from { transform: scale(.96); opacity: 0; }
+            to   { transform: scale(1);   opacity: 1; }
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 18px 22px;
+            border-bottom: 1px solid var(--border);
+            position: sticky; top: 0; background: var(--white);
+            z-index: 1;
+        }
+
+        .modal-header h2 { color: var(--navy); font-size: 15px; font-weight: 700; }
+
+        .modal-close {
+            width: 34px; height: 34px;
+            display: inline-flex; align-items: center; justify-content: center;
+            background: #f3f4f6;
+            border: none;
+            border-radius: 8px;
             color: var(--muted);
-            font-size: 12px;
+            cursor: pointer;
+            font-size: 18px; line-height: 1;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .modal-close:hover { background: #e5e7eb; color: var(--navy); }
+
+        .modal-body { padding: 22px; }
+
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            padding: 16px 22px;
+            border-top: 1px solid var(--border);
+            position: sticky; bottom: 0; background: var(--white);
         }
 
         /* =================================================
-           RESPONSIVE — TABLET / LAPTOP
+           MODAL CONTENT — VIEW
         ================================================= */
-        @media (max-width: 1050px) {
-            .stats-grid {
-                grid-template-columns: repeat(4, 1fr);
-            }
+        .view-hero {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding-bottom: 18px;
+            margin-bottom: 18px;
+            border-bottom: 1px solid var(--border);
         }
 
+        .view-photo {
+            width: 76px; height: 76px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            object-fit: cover;
+            border: 2px solid var(--border);
+        }
+
+        .view-photo-placeholder {
+            width: 76px; height: 76px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: var(--navy);
+            color: var(--gold-light);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 26px; font-weight: 800;
+        }
+
+        .view-hero-info { flex: 1; min-width: 0; }
+        .view-hero-info h3 {
+            color: var(--navy);
+            font-size: 17px;
+            font-weight: 750;
+            margin-bottom: 4px;
+            overflow-wrap: anywhere;
+        }
+        .view-hero-info .adm {
+            color: var(--muted);
+            font-size: 11.5px;
+            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+            margin-bottom: 8px;
+        }
+
+        .view-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px 20px;
+        }
+
+        .view-item { min-width: 0; }
+        .view-item .k {
+            color: var(--muted);
+            font-size: 9.5px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .7px;
+            margin-bottom: 4px;
+        }
+        .view-item .v {
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 600;
+            overflow-wrap: anywhere;
+        }
+        .view-item.full { grid-column: 1 / -1; }
+
+        /* =================================================
+           MODAL FORM (EDIT / TRANSFER)
+        ================================================= */
+        .form-group { margin-bottom: 16px; }
+
+        .form-group label {
+            display: block;
+            color: var(--navy);
+            font-size: 11px;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .form-group label .req { color: var(--red); margin-left: 2px; }
+
+        .form-control {
+            width: 100%;
+            height: 44px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0 12px;
+            font-family: inherit;
+            font-size: 13.5px;
+            background: #fcfcfd;
+            color: var(--text);
+            outline: none;
+            transition: .2s ease;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        .form-control:focus {
+            border-color: var(--gold);
+            background: var(--white);
+            box-shadow: 0 0 0 3px rgba(201,162,39,.12);
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+
+        .form-grid .full { grid-column: 1 / -1; }
+
+        /* =================================================
+           BUTTONS
+        ================================================= */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            min-height: 44px;
+            padding: 0 22px;
+            border: none;
+            border-radius: 9px;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+            text-decoration: none;
+            white-space: nowrap;
+            transition: .15s ease;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .btn:disabled { opacity: .6; cursor: not-allowed; }
+
+        .btn-primary { background: var(--navy); color: var(--white); }
+        .btn-primary:hover:not(:disabled) { background: var(--navy-dark); }
+
+        .btn-ghost {
+            background: var(--white);
+            color: var(--muted);
+            border: 1px solid var(--border);
+        }
+        .btn-ghost:hover:not(:disabled) { color: var(--navy); border-color: #c8ccd3; }
+
+        .btn-warning { background: var(--orange); color: var(--white); }
+        .btn-warning:hover:not(:disabled) { background: #866018; }
+
+        .btn .spinner {
+            width: 14px; height: 14px;
+            border: 2px solid rgba(255,255,255,.4);
+            border-top-color: var(--white);
+            border-radius: 50%;
+            animation: spin .6s linear infinite;
+            display: none;
+        }
+
+        .btn.loading .spinner { display: inline-block; }
+        .btn.loading .btn-label { opacity: .7; }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* =================================================
+           TOASTS
+        ================================================= */
+        .toast-wrap {
+            position: fixed;
+            top: 20px; right: 20px;
+            z-index: 3000;
+            display: flex; flex-direction: column; gap: 10px;
+            pointer-events: none;
+        }
+
+        .toast {
+            padding: 13px 16px;
+            background: var(--white);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--green);
+            border-radius: 9px;
+            box-shadow: 0 10px 30px rgba(16,24,43,.12);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--navy);
+            min-width: 240px;
+            max-width: 360px;
+            pointer-events: auto;
+            animation: slideIn .25s ease;
+        }
+        .toast.error { border-left-color: var(--red); }
+        @keyframes slideIn {
+            from { transform: translateX(20px); opacity: 0; }
+            to   { transform: translateX(0);    opacity: 1; }
+        }
+
+        /* =================================================
+           RESPONSIVE
+        ================================================= */
         @media (max-width: 900px) {
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-
-            .filter-form {
-                grid-template-columns: 1fr 1fr;
-            }
-
-            .filter-button,
-            .reset-button {
-                width: auto;
-            }
+            .stats-grid  { grid-template-columns: repeat(2, 1fr); }
+            .filter-form { grid-template-columns: 1fr 1fr; }
         }
 
-        /* =================================================
-           RESPONSIVE — MOBILE DRAWER MODE
-        ================================================= */
         @media (max-width: 800px) {
 
             .main-content {
@@ -778,9 +946,7 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             }
 
             body.sidebar-collapsed .main-content { margin-left: 0; }
-            body.sidebar-collapsed .topbar        { left: 0; }
 
-            /* Page header */
             .page-header {
                 align-items: stretch;
                 flex-direction: column;
@@ -798,7 +964,6 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
                 font-size: 13px;
             }
 
-            /* Stats */
             .stats-grid {
                 grid-template-columns: repeat(2, 1fr);
                 gap: 10px;
@@ -809,60 +974,26 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
             .stat-value { font-size: 22px; }
             .stat-label { font-size: 9px; }
 
-            /* Filters */
             .filter-toggle { display: flex; }
+            .filter-panel { padding: 14px; margin-bottom: 14px; }
+            .filter-panel.collapsed .filter-form { display: none; }
+            .filter-form { grid-template-columns: 1fr; gap: 12px; }
 
-            .filter-panel {
-                padding: 14px;
-                margin-bottom: 14px;
-            }
-
-            .filter-panel.collapsed .filter-form {
-                display: none;
-            }
-
-            .filter-form {
-                grid-template-columns: 1fr;
-                gap: 12px;
-            }
-
-            .filter-group label {
-                font-size: 11px;
-                margin-bottom: 6px;
-            }
-
-            .filter-control {
-                height: 46px;
-                font-size: 14px;
-                border-radius: 9px;
-            }
-
+            .filter-control,
             .filter-button,
-            .reset-button {
-                width: 100%;
-                height: 46px;
-                font-size: 13.5px;
-                border-radius: 9px;
-            }
+            .reset-button { height: 46px; font-size: 14px; border-radius: 9px; width: 100%; }
 
-            /* Results bar */
             .results-bar {
                 flex-direction: column;
                 align-items: flex-start;
                 gap: 3px;
                 margin-bottom: 12px;
             }
-
             .results-bar h2 { font-size: 14px; }
             .results-count { font-size: 11px; }
 
-            /* Table → Cards */
             .table-panel .table-wrapper { display: none; }
-
-            .card-list {
-                display: block;
-                padding: 12px;
-            }
+            .card-list { display: block; padding: 12px; }
 
             .student-card {
                 padding: 14px;
@@ -870,119 +1001,74 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
                 border-radius: 12px;
             }
 
-            .student-card:active {
-                background: #fdfcf8;
-            }
-
-            .student-card-top {
-                gap: 11px;
-                padding-bottom: 12px;
-                margin-bottom: 12px;
-            }
-
-            .student-card-top .student-name { font-size: 13.5px; }
-            .student-card-top .student-id   { font-size: 10px; }
-
-            .student-card-meta {
-                grid-template-columns: 1fr 1fr;
-                gap: 10px 12px;
-                margin-bottom: 12px;
-            }
-
-            .meta-item .k { font-size: 9px; }
-            .meta-item .v { font-size: 12.5px; }
-
-            .student-card-actions {
-                gap: 8px;
-                padding-top: 12px;
-            }
+            .student-card-meta { grid-template-columns: 1fr 1fr; }
 
             .student-card-actions .action-btn {
                 min-height: 42px;
-                font-size: 12.5px;
+                font-size: 12px;
             }
 
-            /* Bigger avatars in cards */
             .student-card .student-photo,
             .student-card .student-placeholder {
-                width: 42px;
-                height: 42px;
-                font-size: 13px;
+                width: 42px; height: 42px; font-size: 13px;
             }
+
+            /* Modal — bottom sheet */
+            .modal-backdrop { padding: 12px; align-items: flex-end; }
+            .modal {
+                max-width: 100%;
+                max-height: 92vh;
+                border-radius: 16px 16px 0 0;
+            }
+            .modal-header { padding: 16px 18px; }
+            .modal-body { padding: 18px; }
+            .modal-footer {
+                flex-direction: column-reverse;
+                padding: 14px 18px;
+            }
+            .modal-footer .btn { width: 100%; }
+
+            .view-grid { grid-template-columns: 1fr; gap: 12px; }
+            .form-grid { grid-template-columns: 1fr; gap: 12px; }
+            .form-grid .full { grid-column: auto; }
         }
 
-        /* =================================================
-           RESPONSIVE — SMALL PHONES
-        ================================================= */
         @media (max-width: 550px) {
-
-            :root { --topbar-h: 66px; }
-
-            .main-content {
-                padding: calc(var(--topbar-h) + 16px) 14px 24px;
-            }
-
+            .main-content { padding: calc(var(--topbar-h) + 14px) 14px 24px; }
             .page-heading h1 { font-size: 19px; }
             .page-heading p  { font-size: 11.5px; }
 
             .stats-grid { gap: 8px; }
-
-            .stat-card {
-                padding: 13px;
-                border-radius: 9px;
-            }
-
+            .stat-card { padding: 13px; }
             .stat-value { font-size: 20px; }
-            .stat-label { font-size: 8.5px; letter-spacing: .7px; }
-            .stat-line  { margin-top: 9px; }
+            .stat-label { font-size: 8.5px; }
 
             .filter-panel { padding: 12px; }
-
-            .student-card-meta {
-                grid-template-columns: 1fr;
-                gap: 8px;
+            .student-card-meta { grid-template-columns: 1fr; gap: 8px; }
+            .student-card-actions { grid-template-columns: 1fr 1fr; }
+            .student-card-actions .action-btn:last-child {
+                grid-column: 1 / -1;
             }
 
-            .student-card-actions {
-                grid-template-columns: 1fr 1fr;
+            .view-photo, .view-photo-placeholder {
+                width: 60px; height: 60px; font-size: 20px;
             }
-
-            .student-card-actions .action-btn {
-                min-height: 40px;
-                font-size: 12px;
-            }
+            .view-hero-info h3 { font-size: 15px; }
         }
 
-        /* =================================================
-           RESPONSIVE — VERY SMALL PHONES
-        ================================================= */
         @media (max-width: 400px) {
-
-            .stats-grid {
-                grid-template-columns: 1fr;
-                gap: 8px;
-            }
-
+            .stats-grid { grid-template-columns: 1fr; gap: 8px; }
             .stat-card {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
+                display: flex; align-items: center; justify-content: space-between;
                 padding: 12px 14px;
             }
-
             .stat-label { order: 1; margin: 0; }
             .stat-value { order: 2; margin: 0; font-size: 20px; }
-            .stat-line  { display: none; }
-
+            .stat-line { display: none; }
             .page-heading h1 { font-size: 18px; }
-            .add-button      { font-size: 12.5px; }
-
             .student-card { padding: 12px; }
         }
 
-        /* =================================================
-           SAFE AREA (iPhone notch) — MOBILE ONLY
-        ================================================= */
         @media (max-width: 800px) {
             @supports (padding: max(0px)) {
                 .main-content {
@@ -990,29 +1076,26 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
                     padding-right: max(14px, env(safe-area-inset-right));
                     padding-bottom: max(24px, env(safe-area-inset-bottom));
                 }
+                .modal-footer { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
             }
-        }
-
-        /* =================================================
-           LANDSCAPE PHONES
-        ================================================= */
-        @media (max-height: 500px) and (max-width: 900px) {
-            .main-content {
-                padding-top: calc(var(--topbar-h) + 12px);
-            }
-
-            .stats-grid { margin-bottom: 12px; }
         }
     </style>
 </head>
 <body>
 
-<?php include 'admin_header.php'; ?>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+<?php
+$topbar_title    = 'Students';
+$topbar_subtitle = 'Manage student records';
+include '../includes/topbar.php';
+?>
+
 <?php include 'admin_sidebar.php'; ?>
 
-<main class="main-content">
+<main class="main-content with-topbar">
 
-    <!-- PAGE HEADER -->
+    <!-- HEADER -->
     <div class="page-header">
         <div class="page-heading">
             <h1>Students</h1>
@@ -1025,26 +1108,23 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
         </a>
     </div>
 
-    <!-- STATISTICS -->
+    <!-- STATS -->
     <section class="stats-grid">
         <div class="stat-card">
             <div class="stat-label">Total Students</div>
             <div class="stat-value"><?php echo number_format($total_students); ?></div>
             <div class="stat-line"></div>
         </div>
-
         <div class="stat-card">
             <div class="stat-label">Active</div>
             <div class="stat-value"><?php echo number_format($active_students); ?></div>
             <div class="stat-line"></div>
         </div>
-
         <div class="stat-card">
             <div class="stat-label">Inactive</div>
             <div class="stat-value"><?php echo number_format($inactive_students); ?></div>
             <div class="stat-line"></div>
         </div>
-
         <div class="stat-card">
             <div class="stat-label">Graduated</div>
             <div class="stat-value"><?php echo number_format($graduated_students); ?></div>
@@ -1063,13 +1143,9 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
 
             <div class="filter-group">
                 <label>Search Student</label>
-                <input
-                    type="text"
-                    name="search"
-                    class="filter-control"
-                    placeholder="Name, reg. or admission no..."
-                    value="<?php echo htmlspecialchars($search); ?>"
-                >
+                <input type="text" name="search" class="filter-control"
+                       placeholder="Name or admission no..."
+                       value="<?php echo htmlspecialchars($search); ?>">
             </div>
 
             <div class="filter-group">
@@ -1077,16 +1153,9 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
                 <select name="class_id" class="filter-control">
                     <option value="">All Classes</option>
                     <?php foreach ($classes as $class): ?>
-                        <option
-                            value="<?php echo (int) $class['class_id']; ?>"
-                            <?php echo ((string) $class_id === (string) $class['class_id']) ? 'selected' : ''; ?>
-                        >
-                            <?php
-                            echo htmlspecialchars($class['class_name']);
-                            if (!empty($class['stream'])) {
-                                echo ' - ' . htmlspecialchars($class['stream']);
-                            }
-                            ?>
+                        <option value="<?php echo (int)$class['class_id']; ?>"
+                            <?php echo ((string)$class_id === (string)$class['class_id']) ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($class['label']); ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
@@ -1128,11 +1197,10 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
                         <tr>
                             <th>No</th>
                             <th>Student</th>
-                            <th>Registration No.</th>
                             <th>Admission No.</th>
                             <th>Gender</th>
+                            <th>Date of Birth</th>
                             <th>Class</th>
-                            <th>Admission Date</th>
                             <th>Status</th>
                             <th>Actions</th>
                         </tr>
@@ -1144,42 +1212,35 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
                         $name         = $student['full_name'];
                         $initial      = strtoupper(mb_substr($name, 0, 1));
                         $status_lower = strtolower($student['status'] ?? '');
+                        $sid          = (int) $student['student_id'];
                     ?>
-                        <tr>
+                        <tr data-student-id="<?php echo $sid; ?>">
                             <td><?php echo $number++; ?></td>
 
                             <td>
                                 <div class="student-cell">
                                     <?php if (!empty($student['photo'])): ?>
-                                        <img
-                                            src="../uploads/students/<?php echo htmlspecialchars($student['photo']); ?>"
-                                            alt="<?php echo htmlspecialchars($name); ?>"
-                                            class="student-photo"
-                                            loading="lazy"
-                                        >
+                                        <img src="../uploads/students/<?php echo htmlspecialchars($student['photo']); ?>"
+                                             alt="" class="student-photo" loading="lazy">
                                     <?php else: ?>
                                         <div class="student-placeholder"><?php echo $initial; ?></div>
                                     <?php endif; ?>
                                     <div>
                                         <div class="student-name"><?php echo htmlspecialchars($name); ?></div>
-                                        <div class="student-id">ID: <?php echo (int) $student['student_id']; ?></div>
+                                        <div class="student-id">ID: <?php echo $sid; ?></div>
                                     </div>
                                 </div>
                             </td>
 
-                            <td>
-                                <span class="registration">
-                                    <?php echo htmlspecialchars($student['registration_no'] ?: '—'); ?>
-                                </span>
-                            </td>
-
-                            <td>
-                                <span class="admission">
-                                    <?php echo htmlspecialchars($student['admission_no']); ?>
-                                </span>
-                            </td>
-
+                            <td><span class="admission"><?php echo htmlspecialchars($student['admission_no']); ?></span></td>
                             <td><?php echo htmlspecialchars($student['gender']); ?></td>
+
+                            <td>
+                                <span class="muted-value">
+                                    <?php echo !empty($student['date_of_birth'])
+                                        ? date('d M Y', strtotime($student['date_of_birth'])) : '—'; ?>
+                                </span>
+                            </td>
 
                             <td>
                                 <?php if (!empty($student['class_name'])): ?>
@@ -1188,32 +1249,27 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
                                         <span class="stream">- <?php echo htmlspecialchars($student['stream']); ?></span>
                                     <?php endif; ?>
                                 <?php else: ?>
-                                    <span class="admission">Not Assigned</span>
+                                    <span class="muted-value">Not Assigned</span>
                                 <?php endif; ?>
                             </td>
 
                             <td>
-                                <?php
-                                if (!empty($student['admission_date'])) {
-                                    echo date('d M Y', strtotime($student['admission_date']));
-                                } else {
-                                    echo '—';
-                                }
-                                ?>
-                            </td>
-
-                            <td>
-                                <span class="status status-<?php echo htmlspecialchars($status_lower); ?>">
+                                <span class="status status-<?php echo htmlspecialchars($status_lower); ?>"
+                                      data-status>
                                     <?php echo ucfirst(htmlspecialchars($status_lower)); ?>
                                 </span>
                             </td>
 
                             <td>
                                 <div class="actions">
-                                    <a href="view_student.php?id=<?php echo (int) $student['student_id']; ?>"
-                                       class="action-btn">View</a>
-                                    <a href="edit_student.php?id=<?php echo (int) $student['student_id']; ?>"
-                                       class="action-btn">Edit</a>
+                                    <button type="button" class="action-btn"
+                                            onclick="viewStudent(<?php echo $sid; ?>)">View</button>
+
+                                    <button type="button" class="action-btn"
+                                            onclick="editStudent(<?php echo $sid; ?>)">Edit</button>
+
+                                    <button type="button" class="action-btn transfer"
+                                            onclick="transferStudent(<?php echo $sid; ?>)">Transfer</button>
                                 </div>
                             </td>
                         </tr>
@@ -1224,40 +1280,31 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
 
             <!-- MOBILE CARDS -->
             <div class="card-list">
-                <?php
-                $n = 1;
-                foreach ($students as $student):
+                <?php foreach ($students as $student):
                     $name         = $student['full_name'];
                     $initial      = strtoupper(mb_substr($name, 0, 1));
                     $status_lower = strtolower($student['status'] ?? '');
+                    $sid          = (int) $student['student_id'];
                 ?>
-                    <div class="student-card">
+                    <div class="student-card" data-student-id="<?php echo $sid; ?>">
 
                         <div class="student-card-top">
                             <?php if (!empty($student['photo'])): ?>
-                                <img
-                                    src="../uploads/students/<?php echo htmlspecialchars($student['photo']); ?>"
-                                    alt="<?php echo htmlspecialchars($name); ?>"
-                                    class="student-photo"
-                                    loading="lazy"
-                                >
+                                <img src="../uploads/students/<?php echo htmlspecialchars($student['photo']); ?>"
+                                     alt="" class="student-photo" loading="lazy">
                             <?php else: ?>
                                 <div class="student-placeholder"><?php echo $initial; ?></div>
                             <?php endif; ?>
                             <div style="min-width:0;flex:1;">
                                 <div class="student-name"><?php echo htmlspecialchars($name); ?></div>
-                                <div class="student-id">ID: <?php echo (int) $student['student_id']; ?></div>
+                                <div class="student-id">ID: <?php echo $sid; ?></div>
                             </div>
-                            <span class="status status-<?php echo htmlspecialchars($status_lower); ?>">
+                            <span class="status status-<?php echo htmlspecialchars($status_lower); ?>" data-status>
                                 <?php echo ucfirst(htmlspecialchars($status_lower)); ?>
                             </span>
                         </div>
 
                         <div class="student-card-meta">
-                            <div class="meta-item">
-                                <span class="k">Reg. No.</span>
-                                <span class="v"><?php echo htmlspecialchars($student['registration_no'] ?: '—'); ?></span>
-                            </div>
                             <div class="meta-item">
                                 <span class="k">Admission No.</span>
                                 <span class="v"><?php echo htmlspecialchars($student['admission_no']); ?></span>
@@ -1267,8 +1314,15 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
                                 <span class="v"><?php echo htmlspecialchars($student['gender']); ?></span>
                             </div>
                             <div class="meta-item">
-                                <span class="k">Class</span>
+                                <span class="k">Date of Birth</span>
                                 <span class="v">
+                                    <?php echo !empty($student['date_of_birth'])
+                                        ? date('d M Y', strtotime($student['date_of_birth'])) : '—'; ?>
+                                </span>
+                            </div>
+                            <div class="meta-item">
+                                <span class="k">Class</span>
+                                <span class="v" data-class-label>
                                     <?php
                                     if (!empty($student['class_name'])) {
                                         echo htmlspecialchars($student['class_name']);
@@ -1281,23 +1335,15 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
                                     ?>
                                 </span>
                             </div>
-                            <div class="meta-item">
-                                <span class="k">Admission Date</span>
-                                <span class="v">
-                                    <?php
-                                    echo !empty($student['admission_date'])
-                                        ? date('d M Y', strtotime($student['admission_date']))
-                                        : '—';
-                                    ?>
-                                </span>
-                            </div>
                         </div>
 
                         <div class="student-card-actions">
-                            <a href="view_student.php?id=<?php echo (int) $student['student_id']; ?>"
-                               class="action-btn">View</a>
-                            <a href="edit_student.php?id=<?php echo (int) $student['student_id']; ?>"
-                               class="action-btn">Edit</a>
+                            <button type="button" class="action-btn"
+                                    onclick="viewStudent(<?php echo $sid; ?>)">View</button>
+                            <button type="button" class="action-btn"
+                                    onclick="editStudent(<?php echo $sid; ?>)">Edit</button>
+                            <button type="button" class="action-btn transfer"
+                                    onclick="transferStudent(<?php echo $sid; ?>)">Transfer</button>
                         </div>
 
                     </div>
@@ -1324,46 +1370,525 @@ $has_filters = ($search !== '' || $class_id !== '' || $status !== '');
 
 </main>
 
+
+<!-- =========================================================
+     VIEW MODAL
+========================================================= -->
+<div class="modal-backdrop" id="viewModal">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>Student Details</h2>
+            <button type="button" class="modal-close" onclick="closeModal('viewModal')">✕</button>
+        </div>
+        <div class="modal-body" id="viewModalBody">
+            <div style="text-align:center;padding:40px;color:var(--muted);">Loading…</div>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-ghost" onclick="closeModal('viewModal')">
+                Close
+            </button>
+        </div>
+    </div>
+</div>
+
+
+<!-- =========================================================
+     EDIT MODAL
+========================================================= -->
+<div class="modal-backdrop" id="editModal">
+    <div class="modal">
+        <form id="editForm" autocomplete="off">
+            <input type="hidden" name="student_id" id="edit_student_id">
+
+            <div class="modal-header">
+                <h2>Edit Student</h2>
+                <button type="button" class="modal-close" onclick="closeModal('editModal')">✕</button>
+            </div>
+
+            <div class="modal-body">
+                <div class="form-grid">
+
+                    <div class="form-group full">
+                        <label>Admission No. <span class="req">*</span></label>
+                        <input type="text" name="admission_no" id="edit_admission_no"
+                               class="form-control" maxlength="50" required>
+                    </div>
+
+                    <div class="form-group full">
+                        <label>Full Name <span class="req">*</span></label>
+                        <input type="text" name="full_name" id="edit_full_name"
+                               class="form-control" maxlength="150" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Gender <span class="req">*</span></label>
+                        <select name="gender" id="edit_gender" class="form-control" required>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Date of Birth</label>
+                        <input type="date" name="date_of_birth" id="edit_date_of_birth"
+                               class="form-control" max="<?php echo date('Y-m-d'); ?>">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Class</label>
+                        <select name="class_id" id="edit_class_id" class="form-control">
+                            <option value="">— Not assigned —</option>
+                            <?php foreach ($classes as $c): ?>
+                                <option value="<?php echo (int)$c['class_id']; ?>">
+                                    <?php echo htmlspecialchars($c['label']); ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Admission Date</label>
+                        <input type="date" name="admission_date" id="edit_admission_date"
+                               class="form-control" max="<?php echo date('Y-m-d'); ?>">
+                    </div>
+
+                    <div class="form-group full">
+                        <label>Status</label>
+                        <select name="status" id="edit_status" class="form-control">
+                            <option value="active">Active</option>
+                            <option value="inactive">Inactive</option>
+                            <option value="graduated">Graduated</option>
+                            <option value="transferred">Transferred</option>
+                        </select>
+                    </div>
+
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost" onclick="closeModal('editModal')">
+                    Cancel
+                </button>
+                <button type="submit" class="btn btn-primary" id="editSaveBtn">
+                    <span class="spinner"></span>
+                    <span class="btn-label">Save Changes</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+
+<!-- =========================================================
+     TRANSFER MODAL
+========================================================= -->
+<div class="modal-backdrop" id="transferModal">
+    <div class="modal">
+        <form id="transferForm" autocomplete="off">
+            <input type="hidden" name="student_id" id="transfer_student_id">
+
+            <div class="modal-header">
+                <h2>Transfer Student</h2>
+                <button type="button" class="modal-close" onclick="closeModal('transferModal')">✕</button>
+            </div>
+
+            <div class="modal-body">
+
+                <div style="padding:12px 14px;background:var(--cream);border-radius:8px;margin-bottom:16px;">
+                    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;font-weight:700;">Student</div>
+                    <div id="transfer_student_name" style="color:var(--navy);font-size:14px;font-weight:700;margin-top:3px;">—</div>
+                    <div id="transfer_current_class" style="font-size:12px;color:var(--muted);margin-top:3px;">—</div>
+                </div>
+
+                <div class="form-group">
+                    <label>New Class <span class="req">*</span></label>
+                    <select name="class_id" id="transfer_class_id" class="form-control" required>
+                        <option value="">— Select class —</option>
+                        <?php foreach ($classes as $c): ?>
+                            <option value="<?php echo (int)$c['class_id']; ?>">
+                                <?php echo htmlspecialchars($c['label']); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+                        <input type="checkbox" name="mark_transferred" id="transfer_mark_status" value="1"
+                               style="width:16px;height:16px;accent-color:var(--navy);">
+                        Also mark status as <strong>Transferred</strong>
+                    </label>
+                </div>
+
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost" onclick="closeModal('transferModal')">
+                    Cancel
+                </button>
+                <button type="submit" class="btn btn-warning" id="transferSaveBtn">
+                    <span class="spinner"></span>
+                    <span class="btn-label">Transfer</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+
 <script>
-    /* =========================================================
-       MOBILE FILTER PANEL — collapse/expand with breakpoint sync
-    ========================================================= */
-    (function () {
-        const filterPanel  = document.getElementById('filterPanel');
-        const filterToggle = document.getElementById('filterToggle');
+/* =========================================================
+   CLASSES map (for label building)
+========================================================= */
+const CLASSES = <?php echo json_encode(array_map(
+    fn($c) => ['id' => (int)$c['class_id'], 'label' => $c['label']],
+    $classes
+)); ?>;
 
-        if (!filterPanel || !filterToggle) return;
+function classLabel(id) {
+    const c = CLASSES.find(x => x.id == id);
+    return c ? c.label : 'Not Assigned';
+}
 
-        const mq              = window.matchMedia('(max-width: 800px)');
-        const hasActiveFilter = <?php echo $has_filters ? 'true' : 'false'; ?>;
 
-        function syncFilterState() {
-            if (mq.matches) {
-                // Mobile: collapse unless user is actively filtering
-                filterPanel.classList.toggle('collapsed', !hasActiveFilter);
-            } else {
-                // Desktop: always expanded
-                filterPanel.classList.remove('collapsed');
-            }
-        }
+/* =========================================================
+   MODAL HELPERS
+========================================================= */
+function openModal(id) {
+    document.getElementById(id).classList.add('open');
+    document.body.classList.add('no-scroll');
+}
+function closeModal(id) {
+    document.getElementById(id).classList.remove('open');
+    if (!document.querySelector('.modal-backdrop.open')) {
+        document.body.classList.remove('no-scroll');
+    }
+}
+document.querySelectorAll('.modal-backdrop').forEach(bd => {
+    bd.addEventListener('click', e => {
+        if (e.target === bd) closeModal(bd.id);
+    });
+});
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        document.querySelectorAll('.modal-backdrop.open').forEach(bd => closeModal(bd.id));
+    }
+});
 
-        // Initial state
-        syncFilterState();
 
-        // React to breakpoint changes
-        if (mq.addEventListener) {
-            mq.addEventListener('change', syncFilterState);
-        } else {
-            // Older Safari fallback
-            mq.addListener(syncFilterState);
-        }
+/* =========================================================
+   TOASTS
+========================================================= */
+function showToast(message, type = 'success', timeout = 3200) {
+    const wrap = document.getElementById('toastWrap');
+    const el = document.createElement('div');
+    el.className = 'toast ' + type;
+    el.textContent = message;
+    wrap.appendChild(el);
 
-        // Toggle on tap (mobile only)
-        filterToggle.addEventListener('click', () => {
-            if (!mq.matches) return;
-            filterPanel.classList.toggle('collapsed');
+    setTimeout(() => {
+        el.style.transition = 'opacity .25s ease, transform .25s ease';
+        el.style.opacity = '0';
+        el.style.transform = 'translateX(20px)';
+        setTimeout(() => el.remove(), 250);
+    }, timeout);
+}
+
+
+/* =========================================================
+   HELPERS
+========================================================= */
+function escHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
+function fmtDate(d) {
+    if (!d) return '—';
+    const dt = new Date(d);
+    if (isNaN(dt)) return '—';
+    return dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+
+/* =========================================================
+   VIEW
+========================================================= */
+function viewStudent(id) {
+    const body = document.getElementById('viewModalBody');
+    body.innerHTML = '<div style="text-align:center;padding:40px;color:var(--muted);">Loading…</div>';
+    openModal('viewModal');
+
+    fetch('get_student.php?id=' + id, { headers: { 'X-Requested-With': 'XMLHttpRequest' }})
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) throw new Error(data.message || 'Failed');
+            const s = data.student;
+
+            const photo = s.photo_url
+                ? `<img src="${escHtml(s.photo_url)}" alt="" class="view-photo"
+                        onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                   <div class="view-photo-placeholder" style="display:none;">${escHtml(s.full_name.charAt(0).toUpperCase())}</div>`
+                : `<div class="view-photo-placeholder">${escHtml(s.full_name.charAt(0).toUpperCase())}</div>`;
+
+            const statusCls = 'status status-' + escHtml((s.status || '').toLowerCase());
+
+            body.innerHTML = `
+                <div class="view-hero">
+                    ${photo}
+                    <div class="view-hero-info">
+                        <h3>${escHtml(s.full_name)}</h3>
+                        <div class="adm">${escHtml(s.admission_no)}</div>
+                        <span class="${statusCls}">${escHtml(s.status.charAt(0).toUpperCase() + s.status.slice(1))}</span>
+                    </div>
+                </div>
+
+                <div class="view-grid">
+                    <div class="view-item">
+                        <div class="k">Gender</div>
+                        <div class="v">${escHtml(s.gender)}</div>
+                    </div>
+                    <div class="view-item">
+                        <div class="k">Date of Birth</div>
+                        <div class="v">${escHtml(s.date_of_birth_fmt || '—')}</div>
+                    </div>
+                    <div class="view-item full">
+                        <div class="k">Class</div>
+                        <div class="v">${escHtml(s.class_label)}</div>
+                    </div>
+                    <div class="view-item">
+                        <div class="k">Admission Date</div>
+                        <div class="v">${escHtml(s.admission_date_fmt || '—')}</div>
+                    </div>
+                    <div class="view-item">
+                        <div class="k">Registered</div>
+                        <div class="v">${escHtml(s.created_at_fmt || '—')}</div>
+                    </div>
+                </div>
+            `;
+        })
+        .catch(err => {
+            body.innerHTML = '<div style="text-align:center;padding:40px;color:var(--red);">' + escHtml(err.message) + '</div>';
         });
-    })();
+}
+
+
+/* =========================================================
+   EDIT
+========================================================= */
+function editStudent(id) {
+    /* Reset form, then fetch and fill */
+    const form = document.getElementById('editForm');
+    form.reset();
+    document.getElementById('edit_student_id').value = id;
+
+    openModal('editModal');
+
+    fetch('get_student.php?id=' + id, { headers: { 'X-Requested-With': 'XMLHttpRequest' }})
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) throw new Error(data.message || 'Failed');
+            const s = data.student;
+
+            document.getElementById('edit_admission_no').value   = s.admission_no || '';
+            document.getElementById('edit_full_name').value      = s.full_name    || '';
+            document.getElementById('edit_gender').value         = s.gender       || 'Male';
+            document.getElementById('edit_date_of_birth').value  = s.date_of_birth || '';
+            document.getElementById('edit_class_id').value       = s.class_id     || '';
+            document.getElementById('edit_admission_date').value = s.admission_date || '';
+            document.getElementById('edit_status').value         = s.status       || 'active';
+        })
+        .catch(err => {
+            closeModal('editModal');
+            showToast(err.message, 'error');
+        });
+}
+
+document.getElementById('editForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+
+    const btn = document.getElementById('editSaveBtn');
+    btn.classList.add('loading');
+    btn.disabled = true;
+
+    const fd = new FormData(this);
+
+    fetch('update_student.php', {
+        method: 'POST',
+        body: fd,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.success) throw new Error(data.message || 'Update failed');
+
+        updateRow(data.student);
+        updateCard(data.student);
+        showToast('Student updated successfully.', 'success');
+        closeModal('editModal');
+    })
+    .catch(err => showToast(err.message, 'error'))
+    .finally(() => {
+        btn.classList.remove('loading');
+        btn.disabled = false;
+    });
+});
+
+
+/* =========================================================
+   TRANSFER
+========================================================= */
+function transferStudent(id) {
+    const form = document.getElementById('transferForm');
+    form.reset();
+    document.getElementById('transfer_student_id').value = id;
+
+    /* Get current data from the table/card */
+    const row  = document.querySelector(`tr[data-student-id="${id}"]`);
+    const card = document.querySelector(`.student-card[data-student-id="${id}"]`);
+
+    const name  = (row || card)?.querySelector('.student-name')?.textContent || '—';
+    const klass = (row || card)?.querySelector('[data-class-label], .class-name')?.textContent?.trim() || '—';
+
+    document.getElementById('transfer_student_name').textContent  = name;
+    document.getElementById('transfer_current_class').textContent = 'Current class: ' + klass;
+
+    openModal('transferModal');
+}
+
+document.getElementById('transferForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+
+    const btn = document.getElementById('transferSaveBtn');
+    btn.classList.add('loading');
+    btn.disabled = true;
+
+    const fd = new FormData(this);
+    /* Checkbox: only send if checked */
+    if (!document.getElementById('transfer_mark_status').checked) {
+        fd.delete('mark_transferred');
+    } else {
+        fd.set('mark_transferred', '1');
+    }
+
+    fetch('transfer_student.php', {
+        method: 'POST',
+        body: fd,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (!data.success) throw new Error(data.message || 'Transfer failed');
+
+        updateRow(data.student);
+        updateCard(data.student);
+        showToast('Student transferred successfully.', 'success');
+        closeModal('transferModal');
+    })
+    .catch(err => showToast(err.message, 'error'))
+    .finally(() => {
+        btn.classList.remove('loading');
+        btn.disabled = false;
+    });
+});
+
+
+/* =========================================================
+   UPDATE ROW / CARD IN PLACE
+========================================================= */
+function updateRow(s) {
+    const tr = document.querySelector(`tr[data-student-id="${s.student_id}"]`);
+    if (!tr) return;
+
+    /* Admission */
+    const admCell = tr.querySelector('.admission');
+    if (admCell) admCell.textContent = s.admission_no || '';
+
+    /* Name */
+    const nameCell = tr.querySelector('.student-name');
+    if (nameCell) nameCell.textContent = s.full_name || '';
+
+    /* Gender */
+    const tds = tr.querySelectorAll('td');
+    if (tds[3]) tds[3].textContent = s.gender || '';
+
+    /* Date of birth */
+    if (tds[4]) tds[4].querySelector('.muted-value').textContent = fmtDate(s.date_of_birth);
+
+    /* Class */
+    if (tds[5]) {
+        const cName = s.class_name
+            ? `${escHtml(s.class_name)}${s.stream ? `<span class="stream">- ${escHtml(s.stream)}</span>` : ''}`
+            : '<span class="muted-value">Not Assigned</span>';
+        tds[5].innerHTML = cName;
+    }
+
+    /* Status */
+    const statusEl = tr.querySelector('[data-status]');
+    if (statusEl) {
+        statusEl.className = 'status status-' + (s.status || '').toLowerCase();
+        statusEl.textContent = (s.status || '').charAt(0).toUpperCase() + (s.status || '').slice(1);
+    }
+}
+
+function updateCard(s) {
+    const card = document.querySelector(`.student-card[data-student-id="${s.student_id}"]`);
+    if (!card) return;
+
+    card.querySelector('.student-name').textContent = s.full_name || '';
+
+    const statusEl = card.querySelector('[data-status]');
+    if (statusEl) {
+        statusEl.className = 'status status-' + (s.status || '').toLowerCase();
+        statusEl.textContent = (s.status || '').charAt(0).toUpperCase() + (s.status || '').slice(1);
+    }
+
+    const metaItems = card.querySelectorAll('.meta-item .v');
+    if (metaItems[0]) metaItems[0].textContent = s.admission_no || '';
+    if (metaItems[1]) metaItems[1].textContent = s.gender || '';
+    if (metaItems[2]) metaItems[2].textContent = fmtDate(s.date_of_birth);
+
+    const classV = card.querySelector('[data-class-label]');
+    if (classV) {
+        classV.textContent = s.class_name
+            ? s.class_name + (s.stream ? ' - ' + s.stream : '')
+            : 'Not Assigned';
+    }
+}
+
+
+/* =========================================================
+   FILTER PANEL COLLAPSE
+========================================================= */
+(function () {
+    const filterPanel  = document.getElementById('filterPanel');
+    const filterToggle = document.getElementById('filterToggle');
+    if (!filterPanel || !filterToggle) return;
+
+    const mq              = window.matchMedia('(max-width: 800px)');
+    const hasActiveFilter = <?php echo $has_filters ? 'true' : 'false'; ?>;
+
+    function syncFilterState() {
+        if (mq.matches) {
+            filterPanel.classList.toggle('collapsed', !hasActiveFilter);
+        } else {
+            filterPanel.classList.remove('collapsed');
+        }
+    }
+    syncFilterState();
+    mq.addEventListener
+        ? mq.addEventListener('change', syncFilterState)
+        : mq.addListener(syncFilterState);
+
+    filterToggle.addEventListener('click', () => {
+        if (!mq.matches) return;
+        filterPanel.classList.toggle('collapsed');
+    });
+})();
 </script>
 
 </body>
