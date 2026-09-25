@@ -19,6 +19,22 @@ function redirect_with_flash(string $type, string $message): void
     exit;
 }
 
+/**
+ * Build a teacher's full display name from users.first_name,
+ * users.middle_name, users.last_name.
+ */
+function build_teacher_name(array $row): string
+{
+    $parts = [
+        $row['teacher_first_name']  ?? '',
+        $row['teacher_middle_name'] ?? '',
+        $row['teacher_last_name']   ?? '',
+    ];
+
+    $name = trim(implode(' ', array_filter($parts, fn($p) => trim((string)$p) !== '')));
+    return preg_replace('/\s+/', ' ', $name) ?? '';
+}
+
 
 /* =========================================================================
    HANDLE FORM SUBMISSIONS
@@ -295,27 +311,65 @@ $params = [];
 $types  = '';
 
 if ($search !== '') {
-    $where[]  = "(class_name LIKE ? OR stream LIKE ?)";
+    /* Search class name, stream AND teacher full name parts */
+    $where[]  = "(c.class_name LIKE ?
+                  OR c.stream LIKE ?
+                  OR u.first_name LIKE ?
+                  OR u.middle_name LIKE ?
+                  OR u.last_name LIKE ?)";
     $like     = '%' . $search . '%';
     $params[] = $like;
     $params[] = $like;
-    $types   .= 'ss';
+    $params[] = $like;
+    $params[] = $like;
+    $params[] = $like;
+    $types   .= 'sssss';
 }
 
 if (in_array($status_filter, ['active', 'inactive'], true)) {
-    $where[]  = "status = ?";
+    $where[]  = "c.status = ?";
     $params[] = $status_filter;
     $types   .= 's';
 }
 
-$sql = "SELECT class_id, class_name, class_level, stream, status, created_at
-        FROM classes";
+/* -------------------------------------------------------------------------
+   Join path:
+     classes (c)
+       -> class_teachers (ct)  : most recent active assignment for this class
+       -> teachers (t)         : teacher_id -> user_id
+       -> users (u)            : actual first_name / middle_name / last_name
+------------------------------------------------------------------------- */
+
+$sql = "SELECT
+            c.class_id,
+            c.class_name,
+            c.class_level,
+            c.stream,
+            c.status,
+            c.created_at,
+            u.first_name  AS teacher_first_name,
+            u.middle_name AS teacher_middle_name,
+            u.last_name   AS teacher_last_name
+        FROM classes c
+        LEFT JOIN class_teachers ct
+               ON ct.class_id = c.class_id
+              AND ct.status = 'active'
+              AND ct.assigned_at = (
+                    SELECT MAX(ct2.assigned_at)
+                    FROM class_teachers ct2
+                    WHERE ct2.class_id = c.class_id
+                      AND ct2.status = 'active'
+              )
+        LEFT JOIN teachers t
+               ON t.teacher_id = ct.teacher_id
+        LEFT JOIN users u
+               ON u.user_id = t.user_id";
 
 if ($where) {
     $sql .= " WHERE " . implode(' AND ', $where);
 }
 
-$sql .= " ORDER BY class_level ASC, class_name ASC, stream ASC";
+$sql .= " ORDER BY c.class_level ASC, c.class_name ASC, c.stream ASC";
 
 $classes = [];
 
@@ -467,7 +521,6 @@ if ($count_res) {
             transform: translateY(-6px) rotate(-45deg);
         }
 
-        /* Overlay behind sidebar when open */
         .sidebar-overlay {
             display: none;
             position: fixed;
@@ -684,6 +737,16 @@ if ($count_res) {
             margin-top: 3px;
         }
 
+        .teacher-name {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .teacher-none {
+            color: var(--muted);
+            font-style: italic;
+        }
+
         .pill {
             display: inline-block;
             font-size: 9px;
@@ -730,7 +793,7 @@ if ($count_res) {
         }
 
         /* =========================================================
-           MOBILE CARD LIST (replaces table on small screens)
+           MOBILE CARD LIST
         ========================================================== */
 
         .class-cards { display: none; }
@@ -771,6 +834,8 @@ if ($count_res) {
             color: var(--text);
             font-weight: 600;
         }
+
+        .class-card-meta .full { grid-column: 1 / -1; }
 
         .class-card-actions {
             display: grid;
@@ -899,14 +964,12 @@ if ($count_res) {
             flex-shrink: 0;
         }
 
-        /* Prevent body scroll when a modal or sidebar is open */
         body.no-scroll { overflow: hidden; }
 
         /* =========================================================
            BREAKPOINTS
         ========================================================== */
 
-        /* Tablet */
         @media (max-width: 900px) {
             .mobile-topbar { display: flex; }
 
@@ -916,7 +979,6 @@ if ($count_res) {
             }
         }
 
-        /* Phone */
         @media (max-width: 650px) {
 
             .main-content { padding: 78px 14px 28px; }
@@ -955,7 +1017,6 @@ if ($count_res) {
                 width: 100%;
             }
 
-            /* Swap table for cards */
             .table-wrap { display: none; }
             .class-cards { display: block; }
 
@@ -979,7 +1040,6 @@ if ($count_res) {
             .modal-footer .btn { width: 100%; }
         }
 
-        /* Very small phones */
         @media (max-width: 380px) {
             .stats-grid { grid-template-columns: 1fr; }
             .class-card-actions { grid-template-columns: 1fr; }
@@ -999,7 +1059,6 @@ if ($count_res) {
     </button>
 </div>
 
-<!-- Overlay -->
 <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
 
@@ -1056,7 +1115,7 @@ include '../includes/topbar.php';
         <input
             type="text"
             name="q"
-            placeholder="Search by class name or stream…"
+            placeholder="Search by class, stream, or teacher…"
             value="<?php echo htmlspecialchars($search, ENT_QUOTES, 'UTF-8'); ?>"
         >
 
@@ -1096,6 +1155,7 @@ include '../includes/topbar.php';
                             <th>Class</th>
                             <th>Level</th>
                             <th>Stream</th>
+                            <th>Class Teacher</th>
                             <th>Status</th>
                             <th>Created</th>
                             <th style="text-align:right;">Actions</th>
@@ -1103,12 +1163,12 @@ include '../includes/topbar.php';
                     </thead>
                     <tbody>
                         <?php foreach ($classes as $c): ?>
+                            <?php $teacher_name = build_teacher_name($c); ?>
                             <tr>
                                 <td>
                                     <div class="class-name">
                                         <?php echo htmlspecialchars($c['class_name'], ENT_QUOTES, 'UTF-8'); ?>
                                     </div>
-                                   
                                 </td>
 
                                 <td>
@@ -1121,6 +1181,16 @@ include '../includes/topbar.php';
                                     <?php echo $c['stream'] !== null && $c['stream'] !== ''
                                         ? htmlspecialchars($c['stream'], ENT_QUOTES, 'UTF-8')
                                         : '—'; ?>
+                                </td>
+
+                                <td>
+                                    <?php if ($teacher_name !== ''): ?>
+                                        <span class="teacher-name">
+                                            <?php echo htmlspecialchars($teacher_name, ENT_QUOTES, 'UTF-8'); ?>
+                                        </span>
+                                    <?php else: ?>
+                                        <span class="teacher-none">Not assigned</span>
+                                    <?php endif; ?>
                                 </td>
 
                                 <td>
@@ -1174,6 +1244,7 @@ include '../includes/topbar.php';
             <!-- MOBILE CARDS -->
             <div class="class-cards">
                 <?php foreach ($classes as $c): ?>
+                    <?php $teacher_name = build_teacher_name($c); ?>
                     <div class="class-card">
 
                         <div class="class-card-top">
@@ -1204,6 +1275,17 @@ include '../includes/topbar.php';
                                     <?php echo $c['stream'] !== null && $c['stream'] !== ''
                                         ? htmlspecialchars($c['stream'], ENT_QUOTES, 'UTF-8')
                                         : '—'; ?>
+                                </div>
+                            </div>
+
+                            <div class="full">
+                                <div class="k">Class Teacher</div>
+                                <div class="v">
+                                    <?php if ($teacher_name !== ''): ?>
+                                        <?php echo htmlspecialchars($teacher_name, ENT_QUOTES, 'UTF-8'); ?>
+                                    <?php else: ?>
+                                        <span class="teacher-none">Not assigned</span>
+                                    <?php endif; ?>
                                 </div>
                             </div>
 
@@ -1398,20 +1480,17 @@ function openEditModal(data) {
 function closeModal(id) {
     document.getElementById(id).classList.remove('open');
 
-    /* Only unlock scroll if no other modal is open */
     if (!document.querySelector('.modal-backdrop.open')) {
         document.body.classList.remove('no-scroll');
     }
 }
 
-/* Backdrop click closes modal */
 document.querySelectorAll('.modal-backdrop').forEach(function (bd) {
     bd.addEventListener('click', function (e) {
         if (e.target === bd) closeModal(bd.id);
     });
 });
 
-/* Escape closes everything (modal + sidebar) */
 document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
         document.querySelectorAll('.modal-backdrop.open')
@@ -1432,8 +1511,6 @@ function openSidebar() {
     document.body.classList.add('no-scroll');
     sidebarOverlay.classList.add('open');
 
-    /* The sidebar element id is `sidebar` in most of my admin_sidebar files.
-       If yours uses a different id, change this selector. */
     const sidebar = document.querySelector('.admin-sidebar, #sidebar, .sidebar');
     if (sidebar) sidebar.classList.add('open');
 
@@ -1448,7 +1525,6 @@ function closeSidebar() {
 
     if (hamburgerBtn) hamburgerBtn.classList.remove('active');
 
-    /* Only unlock scroll if no modal open */
     if (!document.querySelector('.modal-backdrop.open')) {
         document.body.classList.remove('no-scroll');
     }
@@ -1468,7 +1544,6 @@ if (sidebarOverlay) {
     sidebarOverlay.addEventListener('click', closeSidebar);
 }
 
-/* Auto-close sidebar when resizing to desktop */
 window.addEventListener('resize', function () {
     if (window.innerWidth > 900) closeSidebar();
 });

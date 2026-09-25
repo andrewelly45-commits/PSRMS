@@ -163,22 +163,6 @@ $current_page = basename($_SERVER['PHP_SELF'] ?? '');
             Announcements
         </a>
 
-        <a href="events.php" class="<?php echo $current_page === 'events.php' ? 'active' : ''; ?>">
-            <svg class="ps-icon" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 11h18"/></svg>
-            Events
-        </a>
-
-        <a href="gallery.php" class="<?php echo $current_page === 'gallery.php' ? 'active' : ''; ?>">
-            <svg class="ps-icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 16l-5-5-9 9"/></svg>
-            Gallery
-        </a>
-
-        <div class="ps-nav-section">Account</div>
-
-        <a href="profile.php" class="<?php echo $current_page === 'profile.php' ? 'active' : ''; ?>">
-            <svg class="ps-icon" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>
-            My Profile
-        </a>
 
     </nav>
 

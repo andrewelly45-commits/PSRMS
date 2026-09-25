@@ -50,10 +50,19 @@ function e($v): string
     return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
 }
 
+function full_name(array $row): string
+{
+    return trim(
+        $row['first_name'] . ' ' .
+        (!empty($row['middle_name']) ? $row['middle_name'] . ' ' : '') .
+        $row['last_name']
+    );
+}
+
 
 /*
 |--------------------------------------------------------------------------
-| Active academic year (needed early for some queries)
+| Active academic year
 |--------------------------------------------------------------------------
 */
 $active_year = null;
@@ -80,12 +89,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $action = $_POST['action'] ?? '';
 
-    /* ---------- Bulk assign ---------- */
+    /* ----------------------------------------------------------------
+       ASSIGN — with conflict detection for subject/class
+    ---------------------------------------------------------------- */
     if ($action === 'assign') {
 
         $teacher_id  = (int) ($_POST['teacher_id'] ?? 0);
         $class_ids   = $_POST['class_ids']  ?? [];
         $subject_ids = $_POST['subject_ids'] ?? [];
+        $conflict_ok = ($_POST['conflict_ok'] ?? '') === '1';
 
         $class_ids   = array_values(array_unique(array_map('intval', (array) $class_ids)));
         $subject_ids = array_values(array_unique(array_map('intval', (array) $subject_ids)));
@@ -93,7 +105,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$active_year) {
             redirect_with_flash('error', 'There is no active academic year. Please activate one first.');
         }
-
         if ($teacher_id <= 0) {
             redirect_with_flash('error', 'Please choose a teacher.');
         }
@@ -118,7 +129,126 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect_with_flash('error', 'Cannot assign classes to the Headteacher.');
         }
 
-        /* Insert class × subject combinations */
+        /* ------------------------------------------------------------
+           Conflict check: for each (class, subject), find whether
+           ANOTHER active teacher already teaches that subject in
+           that class. If yes → block and return the conflict info.
+        ------------------------------------------------------------ */
+        $conflicts = [];
+
+        if (!$conflict_ok) {
+
+            $check = mysqli_prepare(
+                $conn,
+                "SELECT ta.assignment_id,
+                        ta.teacher_id,
+                        u.first_name, u.middle_name, u.last_name
+                 FROM teacher_assignments ta
+                 INNER JOIN teachers t ON t.teacher_id = ta.teacher_id
+                 INNER JOIN users u   ON u.user_id    = t.user_id
+                 WHERE ta.class_id = ?
+                   AND ta.subject_id = ?
+                   AND ta.academic_year_id = ?
+                   AND ta.status = 'active'
+                   AND ta.teacher_id <> ?
+                 LIMIT 1"
+            );
+
+            foreach ($class_ids as $cid) {
+                foreach ($subject_ids as $sid) {
+
+                    mysqli_stmt_bind_param($check, 'iiii', $cid, $sid, $active_year_id, $teacher_id);
+                    mysqli_stmt_execute($check);
+                    $c = mysqli_fetch_assoc(mysqli_stmt_get_result($check));
+
+                    if ($c) {
+                        $conflicts[] = [
+                            'class_id'   => $cid,
+                            'subject_id' => $sid,
+                            'teacher_id' => (int) $c['teacher_id'],
+                            'teacher'    => full_name($c),
+                        ];
+                    }
+                }
+            }
+            mysqli_stmt_close($check);
+
+            if (!empty($conflicts)) {
+
+                /* Resolve names for display */
+                $class_names   = [];
+                $subject_names = [];
+
+                if (!empty($class_ids)) {
+                    $ph = implode(',', array_fill(0, count($class_ids), '?'));
+                    $s  = mysqli_prepare($conn, "SELECT class_id, class_name, stream FROM classes WHERE class_id IN ($ph)");
+                    mysqli_stmt_bind_param($s, str_repeat('i', count($class_ids)), ...$class_ids);
+                    mysqli_stmt_execute($s);
+                    $r = mysqli_stmt_get_result($s);
+                    while ($row = mysqli_fetch_assoc($r)) {
+                        $class_names[(int)$row['class_id']] = $row['class_name'] . ($row['stream'] ? ' - ' . $row['stream'] : '');
+                    }
+                    mysqli_stmt_close($s);
+                }
+
+                if (!empty($subject_ids)) {
+                    $ph = implode(',', array_fill(0, count($subject_ids), '?'));
+                    $s  = mysqli_prepare($conn, "SELECT subject_id, subject_name FROM subjects WHERE subject_id IN ($ph)");
+                    mysqli_stmt_bind_param($s, str_repeat('i', count($subject_ids)), ...$subject_ids);
+                    mysqli_stmt_execute($s);
+                    $r = mysqli_stmt_get_result($s);
+                    while ($row = mysqli_fetch_assoc($r)) {
+                        $subject_names[(int)$row['subject_id']] = $row['subject_name'];
+                    }
+                    mysqli_stmt_close($s);
+                }
+
+                foreach ($conflicts as &$cf) {
+                    $cf['class_name']   = $class_names[$cf['class_id']]     ?? 'Class';
+                    $cf['subject_name'] = $subject_names[$cf['subject_id']] ?? 'Subject';
+                }
+                unset($cf);
+
+                /* Store conflict data so the modal can show it on reload */
+                $_SESSION['assign_conflict'] = [
+                    'teacher_id'  => $teacher_id,
+                    'class_ids'   => $class_ids,
+                    'subject_ids' => $subject_ids,
+                    'conflicts'   => $conflicts,
+                ];
+
+                redirect_with_flash('error', 'Some subjects are already assigned to another teacher in the same class. Please review the warning below.');
+            }
+        }
+
+        /* ------------------------------------------------------------
+           If conflict_ok was sent (admin confirmed Replace), we delete
+           the existing conflicting assignment before inserting the new
+           one so ownership transfers cleanly.
+        ------------------------------------------------------------ */
+        if ($conflict_ok) {
+            $del = mysqli_prepare(
+                $conn,
+                "DELETE FROM teacher_assignments
+                 WHERE class_id = ?
+                   AND subject_id = ?
+                   AND academic_year_id = ?
+                   AND status = 'active'
+                   AND teacher_id <> ?"
+            );
+
+            foreach ($class_ids as $cid) {
+                foreach ($subject_ids as $sid) {
+                    mysqli_stmt_bind_param($del, 'iiii', $cid, $sid, $active_year_id, $teacher_id);
+                    mysqli_stmt_execute($del);
+                }
+            }
+            mysqli_stmt_close($del);
+        }
+
+        /* ------------------------------------------------------------
+           Insert
+        ------------------------------------------------------------ */
         $inserted = 0;
         $skipped  = 0;
 
@@ -131,21 +261,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         foreach ($class_ids as $cid) {
             foreach ($subject_ids as $sid) {
-                mysqli_stmt_bind_param(
-                    $stmt,
-                    'iiii',
-                    $teacher_id,
-                    $cid,
-                    $sid,
-                    $active_year_id
-                );
+                mysqli_stmt_bind_param($stmt, 'iiii', $teacher_id, $cid, $sid, $active_year_id);
                 mysqli_stmt_execute($stmt);
 
-                if (mysqli_stmt_affected_rows($stmt) > 0) {
-                    $inserted++;
-                } else {
-                    $skipped++;
-                }
+                if (mysqli_stmt_affected_rows($stmt) > 0) $inserted++;
+                else $skipped++;
             }
         }
         mysqli_stmt_close($stmt);
@@ -162,13 +282,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         redirect_with_flash('success', $msg);
     }
 
-    /* ---------- Remove one ---------- */
+    /* ----------------------------------------------------------------
+       REMOVE
+    ---------------------------------------------------------------- */
     if ($action === 'remove') {
         $assignment_id = (int) ($_POST['assignment_id'] ?? 0);
 
-        if ($assignment_id <= 0) {
-            redirect_with_flash('error', 'Invalid assignment.');
-        }
+        if ($assignment_id <= 0) redirect_with_flash('error', 'Invalid assignment.');
 
         $stmt = mysqli_prepare($conn, "DELETE FROM teacher_assignments WHERE assignment_id = ?");
         mysqli_stmt_bind_param($stmt, 'i', $assignment_id);
@@ -176,19 +296,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $deleted = mysqli_stmt_affected_rows($stmt);
         mysqli_stmt_close($stmt);
 
-        if ($deleted > 0) {
-            redirect_with_flash('success', 'Assignment removed.');
-        }
+        if ($deleted > 0) redirect_with_flash('success', 'Assignment removed.');
         redirect_with_flash('error', 'Assignment not found.');
     }
 
-    /* ---------- Toggle status ---------- */
+    /* ----------------------------------------------------------------
+       TOGGLE
+    ---------------------------------------------------------------- */
     if ($action === 'toggle') {
         $assignment_id = (int) ($_POST['assignment_id'] ?? 0);
 
-        if ($assignment_id <= 0) {
-            redirect_with_flash('error', 'Invalid assignment.');
-        }
+        if ($assignment_id <= 0) redirect_with_flash('error', 'Invalid assignment.');
 
         $stmt = mysqli_prepare(
             $conn,
@@ -203,13 +321,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         redirect_with_flash('success', 'Assignment status updated.');
     }
 
-    /* ---------- Clear all for one teacher ---------- */
+    /* ----------------------------------------------------------------
+       CLEAR TEACHER
+    ---------------------------------------------------------------- */
     if ($action === 'clear_teacher') {
         $teacher_id = (int) ($_POST['teacher_id'] ?? 0);
 
-        if ($teacher_id <= 0) {
-            redirect_with_flash('error', 'Invalid teacher.');
-        }
+        if ($teacher_id <= 0) redirect_with_flash('error', 'Invalid teacher.');
 
         $stmt = mysqli_prepare($conn, "DELETE FROM teacher_assignments WHERE teacher_id = ?");
         mysqli_stmt_bind_param($stmt, 'i', $teacher_id);
@@ -224,7 +342,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 /*
 |--------------------------------------------------------------------------
-| Load teachers (with specialization + current assignment count)
+| Load teachers
 |--------------------------------------------------------------------------
 */
 
@@ -249,12 +367,7 @@ $res = mysqli_query(
 
 if ($res) {
     while ($row = mysqli_fetch_assoc($res)) {
-
-        $row['full_name'] = trim(
-            $row['first_name'] . ' ' .
-            ($row['middle_name'] ? $row['middle_name'] . ' ' : '') .
-            $row['last_name']
-        );
+        $row['full_name'] = full_name($row);
 
         $spec = trim((string) $row['specialization']);
         $row['display_name'] = $spec !== ''
@@ -262,25 +375,6 @@ if ($res) {
             : $row['full_name'];
 
         $teachers[] = $row;
-    }
-}
-
-/* Count active assignments per teacher for the active year */
-$teacher_assignment_counts = [];
-
-if ($active_year_id > 0) {
-    $res = mysqli_query(
-        $conn,
-        "SELECT teacher_id, COUNT(*) AS c
-         FROM teacher_assignments
-         WHERE status = 'active'
-           AND academic_year_id = $active_year_id
-         GROUP BY teacher_id"
-    );
-    if ($res) {
-        while ($row = mysqli_fetch_assoc($res)) {
-            $teacher_assignment_counts[(int)$row['teacher_id']] = (int)$row['c'];
-        }
     }
 }
 
@@ -331,7 +425,7 @@ if ($res) {
 
 /*
 |--------------------------------------------------------------------------
-| All academic years (for the filter dropdown)
+| All academic years (filter dropdown)
 |--------------------------------------------------------------------------
 */
 
@@ -351,12 +445,12 @@ if ($res) {
 
 /*
 |--------------------------------------------------------------------------
-| Filter + Load assignments
+| Filters
 |--------------------------------------------------------------------------
 */
-$filter_teacher  = (int) ($_GET['teacher']    ?? 0);
-$filter_class    = (int) ($_GET['class']      ?? 0);
-$filter_year     = (int) ($_GET['year']       ?? 0);
+$filter_teacher  = (int) ($_GET['teacher'] ?? 0);
+$filter_class    = (int) ($_GET['class']   ?? 0);
+$filter_year     = (int) ($_GET['year']    ?? 0);
 $filter_status   = $_GET['status'] ?? '';
 
 $where  = ["1=1"];
@@ -403,6 +497,7 @@ $sql = "
         c.class_id,
         c.class_name,
         c.stream,
+        c.class_level,
 
         s.subject_id,
         s.subject_name,
@@ -417,7 +512,8 @@ $sql = "
     INNER JOIN subjects  s  ON s.subject_id      = ta.subject_id
     INNER JOIN academic_years ay ON ay.academic_year_id = ta.academic_year_id
     WHERE " . implode(' AND ', $where) . "
-    ORDER BY u.first_name ASC, c.class_name ASC, s.subject_name ASC
+    ORDER BY c.class_level ASC, c.class_name ASC, c.stream ASC,
+             u.first_name ASC, s.subject_name ASC
 ";
 
 $assignments = [];
@@ -427,20 +523,68 @@ if ($stmt) {
     mysqli_stmt_execute($stmt);
     $res = mysqli_stmt_get_result($stmt);
     while ($row = mysqli_fetch_assoc($res)) {
-        $row['teacher_name'] = trim(
-            $row['first_name'] . ' ' .
-            ($row['middle_name'] ? $row['middle_name'] . ' ' : '') .
-            $row['last_name']
-        );
-        $row['class_label'] = $row['class_name']
+        $row['teacher_name'] = full_name($row);
+        $row['class_label']  = $row['class_name']
             . ($row['stream'] ? ' - ' . $row['stream'] : '');
         $assignments[] = $row;
     }
     mysqli_stmt_close($stmt);
 }
 
-/* Stats */
-$stats = ['total' => 0, 'active' => 0, 'inactive' => 0, 'teachers' => 0];
+
+/*
+|--------------------------------------------------------------------------
+| Group by class  →  { class_id: { info, teachers: { teacher_id: {...} } } }
+|--------------------------------------------------------------------------
+*/
+$grouped = [];
+
+foreach ($assignments as $a) {
+    $cid = (int) $a['class_id'];
+    $tid = (int) $a['teacher_id'];
+
+    if (!isset($grouped[$cid])) {
+        $grouped[$cid] = [
+            'class_id'    => $cid,
+            'class_label' => $a['class_label'],
+            'class_name'  => $a['class_name'],
+            'stream'      => $a['stream'],
+            'class_level' => (int) $a['class_level'],
+            'teachers'    => [],
+        ];
+    }
+
+    if (!isset($grouped[$cid]['teachers'][$tid])) {
+        $grouped[$cid]['teachers'][$tid] = [
+            'teacher_id' => $tid,
+            'name'       => $a['teacher_name'],
+            'email'      => $a['email'],
+            'employee_no'=> $a['employee_no'],
+            'specialization' => $a['specialization'],
+            'subjects'   => [],
+        ];
+    }
+
+    $grouped[$cid]['teachers'][$tid]['subjects'][] = [
+        'assignment_id' => (int) $a['assignment_id'],
+        'subject_id'    => (int) $a['subject_id'],
+        'subject_name'  => $a['subject_name'],
+        'subject_type'  => $a['subject_type'],
+        'status'        => $a['status'],
+        'academic_year' => $a['academic_year'],
+        'assigned_at'   => $a['assigned_at'],
+    ];
+}
+
+$class_groups = array_values($grouped);
+
+
+/*
+|--------------------------------------------------------------------------
+| Stats
+|--------------------------------------------------------------------------
+*/
+$stats = ['total' => 0, 'active' => 0, 'inactive' => 0, 'teachers' => 0, 'classes' => 0];
 
 $res = mysqli_query(
     $conn,
@@ -448,7 +592,8 @@ $res = mysqli_query(
         COUNT(*) AS total,
         SUM(status = 'active')   AS active_total,
         SUM(status = 'inactive') AS inactive_total,
-        COUNT(DISTINCT teacher_id) AS teacher_total
+        COUNT(DISTINCT teacher_id) AS teacher_total,
+        COUNT(DISTINCT class_id)   AS class_total
      FROM teacher_assignments"
 );
 if ($res && $row = mysqli_fetch_assoc($res)) {
@@ -456,10 +601,11 @@ if ($res && $row = mysqli_fetch_assoc($res)) {
     $stats['active']   = (int) $row['active_total'];
     $stats['inactive'] = (int) $row['inactive_total'];
     $stats['teachers'] = (int) $row['teacher_total'];
+    $stats['classes']  = (int) $row['class_total'];
 }
 
-$flash = $_SESSION['assign_flash'] ?? null;
-unset($_SESSION['assign_flash']);
+$flash            = $_SESSION['assign_flash']    ?? null;  unset($_SESSION['assign_flash']);
+$assign_conflict  = $_SESSION['assign_conflict'] ?? null;  unset($_SESSION['assign_conflict']);
 
 $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || $filter_status !== '');
 
@@ -571,6 +717,7 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
             margin-bottom: 18px;
             font-size: 12.5px;
             font-weight: 600;
+            line-height: 1.5;
         }
         .alert.success { background: var(--green-bg); border: 1px solid #cfe5d7; color: var(--green); }
         .alert.error   { background: var(--red-bg);   border: 1px solid #efd2d2; color: var(--red); }
@@ -578,8 +725,8 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
         /* STATS */
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 15px;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 14px;
             margin-bottom: 22px;
         }
 
@@ -587,7 +734,7 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
             background: var(--white);
             border: 1px solid var(--border);
             border-radius: 10px;
-            padding: 18px 20px;
+            padding: 16px 18px;
         }
 
         .stat-card .label {
@@ -600,7 +747,7 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
 
         .stat-card .value {
             color: var(--navy);
-            font-size: 24px;
+            font-size: 23px;
             font-weight: 750;
             margin-top: 6px;
         }
@@ -630,7 +777,6 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
             text-align: left;
             justify-content: space-between;
             align-items: center;
-            -webkit-tap-highlight-color: transparent;
         }
 
         .filter-toggle .chev {
@@ -678,132 +824,191 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
             box-shadow: 0 0 0 3px rgba(201,162,39,.12);
         }
 
-        /* TABLE */
-        .table-card {
+        /* =========================================================
+           CLASS CARDS
+        ========================================================= */
+        .classes-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 18px;
+            margin-bottom: 30px;
+        }
+
+        .class-card {
             background: var(--white);
             border: 1px solid var(--border);
-            border-radius: 10px;
+            border-radius: 12px;
             overflow: hidden;
+            box-shadow: 0 2px 10px rgba(23,35,60,.03);
         }
 
-        .table-wrapper {
-            overflow-x: auto;
-            -webkit-overflow-scrolling: touch;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            min-width: 1050px;
-        }
-
-        thead th {
-            text-align: left;
-            padding: 13px 16px;
-            background: #fafaf8;
-            color: var(--muted);
-            font-size: 9.5px;
-            font-weight: 750;
-            text-transform: uppercase;
-            letter-spacing: .7px;
-            border-bottom: 1px solid var(--border);
-            white-space: nowrap;
-        }
-
-        tbody td {
-            padding: 14px 16px;
-            border-bottom: 1px solid #f0f1f3;
-            font-size: 12.5px;
-            vertical-align: middle;
-        }
-
-        tbody tr:last-child td { border-bottom: none; }
-        tbody tr:hover { background: #fbfbf8; }
-
-        .teacher-name {
-            color: var(--navy);
-            font-weight: 700;
-            font-size: 13px;
-        }
-
-        .teacher-meta {
-            color: var(--muted);
-            font-size: 10.5px;
-            margin-top: 2px;
-        }
-
-        /* PILLS */
-        .pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            font-size: 10px;
-            font-weight: 750;
-            padding: 5px 11px;
-            border-radius: 20px;
-            text-transform: uppercase;
-            letter-spacing: .4px;
-            white-space: nowrap;
-        }
-
-        .pill-class    { background: var(--blue-bg);   color: var(--blue); }
-        .pill-subject  { background: var(--green-bg);  color: var(--green); }
-        .pill-year     { background: var(--orange-bg); color: var(--orange); }
-
-        /* STATUS */
-        .status {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            padding: 5px 10px;
-            border-radius: 20px;
-            font-size: 10px;
-            font-weight: 700;
-            white-space: nowrap;
-        }
-
-        .status::before {
-            content: "";
-            width: 5px; height: 5px;
-            border-radius: 50%;
-        }
-
-        .status-active   { color: var(--green);  background: var(--green-bg); }
-        .status-active::before { background: var(--green); }
-
-        .status-inactive { color: var(--orange); background: var(--orange-bg); }
-        .status-inactive::before { background: var(--orange); }
-
-        /* ACTIONS */
-        .actions {
+        .class-card-header {
             display: flex;
-            gap: 6px;
-            flex-wrap: wrap;
-            justify-content: flex-end;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 16px 20px;
+            background: var(--navy);
+            color: var(--white);
         }
 
-        .icon-btn {
-            border: 1px solid var(--border);
-            background: var(--white);
-            border-radius: 6px;
-            min-height: 32px;
-            padding: 0 11px;
-            font-family: inherit;
-            font-size: 10.5px;
-            font-weight: 700;
-            cursor: pointer;
+        .class-card-header h3 {
+            font-size: 15px;
+            font-weight: 750;
+            letter-spacing: .2px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .class-card-header .class-icon {
+            width: 26px;
+            height: 26px;
+            border-radius: 8px;
+            background: var(--gold);
             color: var(--navy);
-            transition: .15s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 900;
+        }
+
+        .class-card-header .teacher-count {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: .4px;
+            text-transform: uppercase;
+            background: rgba(255,255,255,.12);
+            padding: 4px 10px;
+            border-radius: 20px;
+            white-space: nowrap;
+        }
+
+        .class-card-body {
+            padding: 4px 0 0;
+        }
+
+        /* TEACHER BLOCK */
+        .teacher-block {
+            padding: 14px 20px;
+            border-bottom: 1px solid #f0f1f3;
+        }
+
+        .teacher-block:last-child { border-bottom: none; }
+
+        .teacher-block-top {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .teacher-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--navy);
+            color: var(--gold-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            font-weight: 800;
+            flex-shrink: 0;
+        }
+
+        .teacher-block-info { flex: 1; min-width: 0; }
+
+        .teacher-block-info .name {
+            color: var(--navy);
+            font-size: 13.5px;
+            font-weight: 700;
+            margin-bottom: 2px;
+            overflow-wrap: anywhere;
+        }
+
+        .teacher-block-info .meta {
+            color: var(--muted);
+            font-size: 10.5px;
+            overflow-wrap: anywhere;
+        }
+
+        /* SUBJECT LIST */
+        .subject-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-left: 48px;
+        }
+
+        .subject-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 8px 5px 11px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            background: var(--green-bg);
+            color: var(--green);
+            border: 1px solid #cfe5d7;
+            line-height: 1.2;
+            max-width: 100%;
+        }
+
+        .subject-chip.inactive {
+            background: #f1f2f4;
+            color: #666;
+            border-color: #e0e2e6;
+        }
+
+        .subject-chip .subject-name {
+            overflow-wrap: anywhere;
+        }
+
+        .subject-chip .chip-actions {
+            display: inline-flex;
+            gap: 3px;
+            margin-left: 2px;
+        }
+
+        .subject-chip .chip-btn {
+            border: none;
+            background: rgba(0,0,0,.06);
+            border-radius: 20px;
+            width: 18px;
+            height: 18px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: 800;
+            color: inherit;
+            cursor: pointer;
+            padding: 0;
+            font-family: inherit;
             -webkit-tap-highlight-color: transparent;
         }
 
-        .icon-btn:hover { border-color: var(--gold); }
-        .icon-btn:active { transform: scale(.96); }
+        .subject-chip .chip-btn:hover { background: rgba(0,0,0,.14); }
 
-        .icon-btn.danger { color: var(--red); border-color: #efd2d2; }
-        .icon-btn.danger:hover { background: var(--red-bg); border-color: var(--red); }
+        .subject-chip .chip-btn.danger:hover {
+            background: var(--red);
+            color: #fff;
+        }
 
-        /* EMPTY */
+        /* EMPTY CLASS */
+        .class-empty {
+            padding: 26px 20px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .class-empty strong { color: var(--navy); }
+
+        /* EMPTY WHOLE PAGE */
         .empty {
             text-align: center;
             padding: 55px 20px;
@@ -813,75 +1018,66 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
 
         .empty h3 { color: var(--navy); font-size: 14px; margin-bottom: 5px; }
 
-        /* MOBILE CARDS */
-        .card-list { display: none; }
-
-        .assignment-card {
-            padding: 16px;
-            border-bottom: 1px solid var(--border);
+        /* =========================================================
+           CONFLICT BANNER
+        ========================================================= */
+        .conflict-banner {
+            background: #fff8e5;
+            border: 1px solid #f0e0a8;
+            border-radius: 10px;
+            padding: 16px 18px;
+            margin-bottom: 20px;
         }
 
-        .assignment-card:last-child { border-bottom: none; }
-
-        .assignment-card-top {
-            padding-bottom: 12px;
-            margin-bottom: 12px;
-            border-bottom: 1px solid #f0f1f3;
+        .conflict-banner h4 {
+            color: #7a5a00;
+            font-size: 14px;
+            margin-bottom: 10px;
             display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 10px;
+            align-items: center;
+            gap: 8px;
         }
 
-        .assignment-card-pills {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 5px;
-            margin-bottom: 12px;
+        .conflict-banner .icon {
+            width: 22px; height: 22px;
+            background: var(--gold);
+            color: var(--navy);
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 900;
+            font-size: 13px;
         }
 
-        .assignment-card-meta {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px 14px;
-            margin-bottom: 12px;
+        .conflict-list {
+            list-style: none;
+            margin: 0 0 14px;
+            padding: 0;
         }
 
-        .meta-item .k {
-            display: block;
-            color: var(--muted);
-            font-size: 9.5px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: .6px;
-            margin-bottom: 3px;
-        }
-
-        .meta-item .v {
-            color: var(--text);
-            font-size: 12.5px;
-            font-weight: 600;
-            word-wrap: break-word;
-            overflow-wrap: anywhere;
-        }
-
-        .assignment-card-actions {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 6px;
-            padding-top: 12px;
-            border-top: 1px solid #f0f1f3;
-        }
-
-        .assignment-card-actions .icon-btn,
-        .assignment-card-actions form,
-        .assignment-card-actions form button {
-            width: 100%;
-            min-height: 42px;
+        .conflict-list li {
+            padding: 8px 12px;
+            background: #fff;
+            border: 1px solid #efe2ba;
+            border-radius: 7px;
             font-size: 12px;
+            color: #7a5a00;
+            line-height: 1.55;
+            margin-bottom: 6px;
         }
 
-        /* MODAL */
+        .conflict-list li strong { color: var(--navy); }
+
+        .conflict-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        /* =========================================================
+           MODAL
+        ========================================================= */
         .modal-backdrop {
             position: fixed;
             inset: 0;
@@ -936,7 +1132,6 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
             cursor: pointer;
             font-size: 18px;
             line-height: 1;
-            -webkit-tap-highlight-color: transparent;
         }
 
         .modal-close:hover { background: #e5e7eb; color: var(--navy); }
@@ -954,7 +1149,7 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
             background: var(--white);
         }
 
-        /* FORM IN MODAL */
+        /* FORM */
         .form-section {
             margin-bottom: 20px;
             padding-bottom: 20px;
@@ -1016,7 +1211,6 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
             box-shadow: 0 0 0 3px rgba(201,162,39,.12);
         }
 
-        /* Locked active year */
         .active-year-display {
             display: flex;
             align-items: center;
@@ -1029,7 +1223,6 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
             color: var(--green);
             font-size: 13.5px;
             font-weight: 700;
-            letter-spacing: .3px;
         }
 
         .year-dot {
@@ -1052,13 +1245,9 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
             line-height: 1.5;
         }
 
-        .no-active-year a {
-            color: var(--orange);
-            font-weight: 800;
-            text-decoration: underline;
-        }
+        .no-active-year a { color: var(--orange); font-weight: 800; text-decoration: underline; }
 
-        /* Chip multi-select */
+        /* CHIPS */
         .chip-grid {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
@@ -1148,14 +1337,17 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
             cursor: pointer;
             padding: 4px 0;
             text-decoration: underline;
-            -webkit-tap-highlight-color: transparent;
         }
 
         .chip-tools button:hover { color: var(--gold); }
 
         /* RESPONSIVE */
+        @media (max-width: 1200px) {
+            .classes-grid { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+        }
+
         @media (max-width: 1100px) {
-            .stats-grid  { grid-template-columns: repeat(2, 1fr); }
+            .stats-grid  { grid-template-columns: repeat(3, 1fr); }
             .filter-form { grid-template-columns: 1fr 1fr 1fr; }
         }
 
@@ -1183,23 +1375,25 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
                 font-size: 13px;
             }
 
-            .stats-grid { grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
+            .stats-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
             .stat-card  { padding: 14px; }
             .stat-card .value { font-size: 20px; }
             .stat-card .label { font-size: 9px; }
 
             .filter-toggle { display: flex; }
-            .filter-panel { padding: 14px; margin-bottom: 14px; }
+            .filter-panel { padding: 14px; }
             .filter-panel.collapsed .filter-form { display: none; }
             .filter-form { grid-template-columns: 1fr; gap: 12px; }
 
             .filter-control,
             .btn { min-height: 46px; font-size: 13.5px; }
 
-            .table-wrapper { display: none; }
-            .card-list { display: block; }
+            .classes-grid { grid-template-columns: 1fr; gap: 14px; }
 
-            .assignment-card-meta { grid-template-columns: 1fr 1fr; }
+            .class-card-header { padding: 14px 16px; }
+            .class-card-header h3 { font-size: 14px; }
+            .teacher-block { padding: 14px 16px; }
+            .subject-list { margin-left: 0; }
 
             .modal-backdrop { padding: 12px; align-items: flex-end; }
             .modal {
@@ -1218,17 +1412,9 @@ $has_filters = ($filter_teacher > 0 || $filter_class > 0 || $filter_year > 0 || 
         @media (max-width: 550px) {
             .main-content { padding: calc(var(--topbar-h) + 14px) 14px 24px; }
             .page-title h1 { font-size: 19px; }
-            .page-title p  { font-size: 11.5px; }
             .stats-grid { gap: 8px; }
             .stat-card { padding: 12px; }
             .stat-card .value { font-size: 19px; }
-            .assignment-card-meta { grid-template-columns: 1fr; gap: 8px; }
-            .assignment-card-actions { grid-template-columns: 1fr; }
-        }
-
-        @media (max-width: 400px) {
-            .stats-grid { grid-template-columns: 1fr 1fr; }
-            .stat-card .value { font-size: 18px; }
         }
 
         @media (max-width: 800px) {
@@ -1261,7 +1447,7 @@ include '../includes/topbar.php';
     <div class="page-header">
         <div class="page-title">
             <h1>Manage Assignments</h1>
-            <p>Assign classes and subjects to each teacher in the school.</p>
+            <p>See who teaches what, in each class.</p>
         </div>
 
         <button type="button" class="btn btn-primary"
@@ -1277,27 +1463,85 @@ include '../includes/topbar.php';
         </div>
     <?php endif; ?>
 
+
+    <!-- =========================================================
+         CONFLICT BANNER
+    ========================================================= -->
+    <?php if ($assign_conflict): ?>
+
+        <div class="conflict-banner">
+            <h4>
+                <span class="icon">!</span>
+                Subject already assigned
+            </h4>
+
+            <p style="font-size:12.5px;color:#7a5a00;margin-bottom:12px;line-height:1.55;">
+                The following subject(s) are already taught by another teacher
+                in the selected class for the active academic year. Choose
+                <strong>Replace</strong> to transfer ownership to the new teacher,
+                or <strong>Cancel</strong> to keep the current assignment.
+            </p>
+
+            <ul class="conflict-list">
+                <?php foreach ($assign_conflict['conflicts'] as $cf): ?>
+                    <li>
+                        <strong><?php echo e($cf['subject_name']); ?></strong>
+                        in <strong><?php echo e($cf['class_name']); ?></strong>
+                        is already taught by
+                        <strong><?php echo e($cf['teacher']); ?></strong>.
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+
+            <form method="POST" action="manage_assignments.php" class="conflict-actions">
+                <input type="hidden" name="action" value="assign">
+                <input type="hidden" name="teacher_id" value="<?php echo (int)$assign_conflict['teacher_id']; ?>">
+                <input type="hidden" name="conflict_ok" value="1">
+                <?php foreach ($assign_conflict['class_ids'] as $cid): ?>
+                    <input type="hidden" name="class_ids[]" value="<?php echo (int)$cid; ?>">
+                <?php endforeach; ?>
+                <?php foreach ($assign_conflict['subject_ids'] as $sid): ?>
+                    <input type="hidden" name="subject_ids[]" value="<?php echo (int)$sid; ?>">
+                <?php endforeach; ?>
+
+                <button type="submit" class="btn btn-primary">
+                    Replace &amp; Assign Anyway
+                </button>
+                <a href="manage_assignments.php" class="btn btn-ghost">Cancel</a>
+            </form>
+        </div>
+
+    <?php endif; ?>
+
+
     <!-- ACTIVE YEAR BANNER -->
     <?php if ($active_year): ?>
         <div class="alert success" style="display:flex;align-items:center;gap:10px;">
             <span class="year-dot"></span>
             <span>
-                Active academic year: <strong><?php echo e($active_year['year']); ?></strong>
-                &nbsp;— all new assignments will be added to this year.
+                Active academic year:
+                <strong><?php echo e($active_year['year']); ?></strong>
+                — new assignments go to this year.
             </span>
         </div>
     <?php else: ?>
         <div class="alert error">
-            ⚠ There is no active academic year. 
-            <a href="../admin/academic_years.php" style="color:inherit;font-weight:800;text-decoration:underline;">
+            ⚠ No active academic year. 
+            <a href="../admin/academic_years.php"
+               style="color:inherit;font-weight:800;text-decoration:underline;">
                 Activate one
             </a>
-            to enable new assignments.
+            to enable assignments.
         </div>
     <?php endif; ?>
 
+
     <!-- STATS -->
     <div class="stats-grid">
+        <div class="stat-card">
+            <div class="label">Classes</div>
+            <div class="value"><?php echo number_format($stats['classes']); ?></div>
+        </div>
         <div class="stat-card">
             <div class="label">Total</div>
             <div class="value"><?php echo number_format($stats['total']); ?></div>
@@ -1311,10 +1555,11 @@ include '../includes/topbar.php';
             <div class="value"><?php echo number_format($stats['inactive']); ?></div>
         </div>
         <div class="stat-card">
-            <div class="label">Teachers Assigned</div>
+            <div class="label">Teachers</div>
             <div class="value"><?php echo number_format($stats['teachers']); ?></div>
         </div>
     </div>
+
 
     <!-- FILTERS -->
     <section class="filter-panel" id="filterPanel">
@@ -1383,162 +1628,122 @@ include '../includes/topbar.php';
         </form>
     </section>
 
-    <!-- TABLE / CARDS -->
-    <div class="table-card">
 
-        <?php if (empty($assignments)): ?>
+    <!-- =========================================================
+         CLASS CARDS
+    ========================================================= -->
+    <?php if (empty($class_groups)): ?>
 
-            <div class="empty">
-                <h3>No assignments found</h3>
-                <p>
-                    <?php if ($has_filters): ?>
-                        Try clearing the filters.
-                    <?php else: ?>
-                        Click <strong>New Assignment</strong> to assign subjects to a teacher.
-                    <?php endif; ?>
-                </p>
-            </div>
+        <div class="empty">
+            <h3>No assignments yet</h3>
+            <p>
+                <?php if ($has_filters): ?>
+                    Try clearing the filters.
+                <?php else: ?>
+                    Click <strong>New Assignment</strong> to assign subjects to a teacher.
+                <?php endif; ?>
+            </p>
+        </div>
 
-        <?php else: ?>
+    <?php else: ?>
 
-            <!-- DESKTOP TABLE -->
-            <div class="table-wrapper">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Teacher</th>
-                            <th>Class</th>
-                            <th>Subject</th>
-                            <th>Academic Year</th>
-                            <th>Status</th>
-                            <th style="text-align:right;">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    <?php foreach ($assignments as $a): ?>
-                        <tr>
-                            <td>
-                                <div class="teacher-name"><?php echo e($a['teacher_name']); ?></div>
-                                <div class="teacher-meta">
-                                    <?php echo e($a['email']); ?>
-                                    <?php if (!empty($a['specialization'])): ?>
-                                        · <?php echo e($a['specialization']); ?>
-                                    <?php endif; ?>
-                                </div>
-                            </td>
-                            <td>
-                                <span class="pill pill-class">
-                                    <?php echo e($a['class_label']); ?>
-                                </span>
-                            </td>
-                            <td>
-                                <span class="pill pill-subject">
-                                    <?php echo e($a['subject_name']); ?>
-                                </span>
-                            </td>
-                            <td>
-                                <span class="pill pill-year">
-                                    <?php echo e($a['academic_year']); ?>
-                                </span>
-                            </td>
-                            <td>
-                                <span class="status status-<?php echo e($a['status']); ?>">
-                                    <?php echo e(ucfirst($a['status'])); ?>
-                                </span>
-                            </td>
-                            <td>
-                                <div class="actions">
+        <div class="classes-grid">
+            <?php foreach ($class_groups as $group):
+                $teacher_count = count($group['teachers']);
+            ?>
+                <div class="class-card">
 
-                                    <form method="POST" style="display:inline;"
-                                          onsubmit="return confirm('Toggle this assignment status?');">
-                                        <input type="hidden" name="action" value="toggle">
-                                        <input type="hidden" name="assignment_id" value="<?php echo (int)$a['assignment_id']; ?>">
-                                        <button type="submit" class="icon-btn">
-                                            <?php echo $a['status'] === 'active' ? 'Deactivate' : 'Activate'; ?>
-                                        </button>
-                                    </form>
+                    <div class="class-card-header">
+                        <h3>
+                            <span class="class-icon"><?php echo e(mb_substr($group['class_name'], 0, 1)); ?></span>
+                            <?php echo e($group['class_label']); ?>
+                        </h3>
+                        <span class="teacher-count">
+                            <?php echo $teacher_count; ?> teacher<?php echo $teacher_count === 1 ? '' : 's'; ?>
+                        </span>
+                    </div>
 
-                                    <form method="POST" style="display:inline;"
-                                          onsubmit="return confirm('Remove this assignment?');">
-                                        <input type="hidden" name="action" value="remove">
-                                        <input type="hidden" name="assignment_id" value="<?php echo (int)$a['assignment_id']; ?>">
-                                        <button type="submit" class="icon-btn danger">Remove</button>
-                                    </form>
+                    <div class="class-card-body">
 
-                                </div>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- MOBILE CARDS -->
-            <div class="card-list">
-                <?php foreach ($assignments as $a): ?>
-                    <div class="assignment-card">
-
-                        <div class="assignment-card-top">
-                            <div style="min-width:0;flex:1;">
-                                <div class="teacher-name"><?php echo e($a['teacher_name']); ?></div>
-                                <div class="teacher-meta">
-                                    <?php echo e($a['email']); ?>
-                                    <?php if (!empty($a['specialization'])): ?>
-                                        · <?php echo e($a['specialization']); ?>
-                                    <?php endif; ?>
-                                </div>
+                        <?php if ($teacher_count === 0): ?>
+                            <div class="class-empty">
+                                No teachers assigned to this class yet.
                             </div>
-                            <span class="status status-<?php echo e($a['status']); ?>">
-                                <?php echo e(ucfirst($a['status'])); ?>
-                            </span>
-                        </div>
+                        <?php else: ?>
 
-                        <div class="assignment-card-pills">
-                            <span class="pill pill-class"><?php echo e($a['class_label']); ?></span>
-                            <span class="pill pill-subject"><?php echo e($a['subject_name']); ?></span>
-                            <span class="pill pill-year"><?php echo e($a['academic_year']); ?></span>
-                        </div>
+                            <?php foreach ($group['teachers'] as $tdata): ?>
 
-                        <div class="assignment-card-meta">
-                            <div class="meta-item">
-                                <span class="k">Employee No.</span>
-                                <span class="v"><?php echo e($a['employee_no'] ?: '—'); ?></span>
-                            </div>
-                            <div class="meta-item">
-                                <span class="k">Assigned</span>
-                                <span class="v">
-                                    <?php echo $a['assigned_at']
-                                        ? e(date('M j, Y', strtotime($a['assigned_at'])))
-                                        : '—'; ?>
-                                </span>
-                            </div>
-                        </div>
+                                <div class="teacher-block">
 
-                        <div class="assignment-card-actions">
-                            <form method="POST"
-                                  onsubmit="return confirm('Toggle this assignment status?');">
-                                <input type="hidden" name="action" value="toggle">
-                                <input type="hidden" name="assignment_id" value="<?php echo (int)$a['assignment_id']; ?>">
-                                <button type="submit" class="icon-btn">
-                                    <?php echo $a['status'] === 'active' ? 'Deactivate' : 'Activate'; ?>
-                                </button>
-                            </form>
+                                    <div class="teacher-block-top">
 
-                            <form method="POST"
-                                  onsubmit="return confirm('Remove this assignment?');">
-                                <input type="hidden" name="action" value="remove">
-                                <input type="hidden" name="assignment_id" value="<?php echo (int)$a['assignment_id']; ?>">
-                                <button type="submit" class="icon-btn danger">Remove</button>
-                            </form>
-                        </div>
+                                        <div class="teacher-avatar">
+                                            <?php echo e(strtoupper(mb_substr($tdata['name'], 0, 1))); ?>
+                                        </div>
+
+                                        <div class="teacher-block-info">
+                                            <div class="name"><?php echo e($tdata['name']); ?></div>
+                                            <div class="meta">
+                                                <?php echo e($tdata['email'] ?: '—'); ?>
+                                                <?php if (!empty($tdata['specialization'])): ?>
+                                                    · <?php echo e($tdata['specialization']); ?>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+
+                                    </div>
+
+                                    <div class="subject-list">
+                                        <?php foreach ($tdata['subjects'] as $sub): ?>
+
+                                            <span class="subject-chip <?php echo $sub['status'] === 'active' ? '' : 'inactive'; ?>">
+
+                                                <span class="subject-name">
+                                                    <?php echo e($sub['subject_name']); ?>
+                                                </span>
+
+                                                <span class="chip-actions">
+
+                                                    <form method="POST" style="display:inline;margin:0;"
+                                                          onsubmit="return confirm('Toggle status of this subject?');">
+                                                        <input type="hidden" name="action" value="toggle">
+                                                        <input type="hidden" name="assignment_id" value="<?php echo $sub['assignment_id']; ?>">
+                                                        <button type="submit"
+                                                                class="chip-btn"
+                                                                title="<?php echo $sub['status'] === 'active' ? 'Deactivate' : 'Activate'; ?>">
+                                                            <?php echo $sub['status'] === 'active' ? '⏸' : '▶'; ?>
+                                                        </button>
+                                                    </form>
+
+                                                    <form method="POST" style="display:inline;margin:0;"
+                                                          onsubmit="return confirm('Remove this subject assignment?');">
+                                                        <input type="hidden" name="action" value="remove">
+                                                        <input type="hidden" name="assignment_id" value="<?php echo $sub['assignment_id']; ?>">
+                                                        <button type="submit"
+                                                                class="chip-btn danger"
+                                                                title="Remove">✕</button>
+                                                    </form>
+
+                                                </span>
+
+                                            </span>
+
+                                        <?php endforeach; ?>
+                                    </div>
+
+                                </div>
+
+                            <?php endforeach; ?>
+
+                        <?php endif; ?>
 
                     </div>
-                <?php endforeach; ?>
-            </div>
 
-        <?php endif; ?>
+                </div>
+            <?php endforeach; ?>
+        </div>
 
-    </div>
+    <?php endif; ?>
 
 </main>
 
@@ -1565,23 +1770,16 @@ include '../includes/topbar.php';
                         <label>Teacher <span style="color:var(--red);">*</span></label>
                         <select name="teacher_id" class="form-control" required>
                             <option value="">— Select teacher —</option>
-                            <?php foreach ($teachers as $t):
-                                $count = $teacher_assignment_counts[(int)$t['teacher_id']] ?? 0;
-                                $hint  = $count > 0
-                                    ? ' · currently ' . $count . ' assignment' . ($count === 1 ? '' : 's')
-                                    : '';
-                            ?>
+                            <?php foreach ($teachers as $t): ?>
                                 <option value="<?php echo (int)$t['teacher_id']; ?>">
-                                    <?php echo e($t['display_name'] . $hint); ?>
+                                    <?php echo e($t['display_name']); ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
                     </div>
 
-                    <!-- Academic year — LOCKED -->
                     <div class="form-group">
                         <label>Academic Year</label>
-
                         <?php if ($active_year): ?>
                             <div class="active-year-display">
                                 <span class="year-dot"></span>
@@ -1611,7 +1809,7 @@ include '../includes/topbar.php';
                     <?php else: ?>
                         <div class="chip-grid">
                             <?php foreach ($classes as $c): ?>
-                                <label class="chip" data-group="class">
+                                <label class="chip">
                                     <input type="checkbox" name="class_ids[]" value="<?php echo (int)$c['class_id']; ?>">
                                     <span class="box"></span>
                                     <span><?php echo e($c['label']); ?></span>
@@ -1665,7 +1863,7 @@ include '../includes/topbar.php';
 
 <script>
 /* =========================================================
-   MODAL HELPERS
+   MODAL
 ========================================================= */
 function openAssignModal() {
     document.getElementById('assignModal').classList.add('open');
@@ -1721,7 +1919,7 @@ function clearAll(kind) {
 
 
 /* =========================================================
-   FILTER PANEL COLLAPSE (mobile only)
+   FILTER PANEL COLLAPSE (mobile)
 ========================================================= */
 (function () {
     const filterPanel  = document.getElementById('filterPanel');
@@ -1739,10 +1937,19 @@ function clearAll(kind) {
         }
     }
 
-    syncFilterState();
+    syncState();
+
+    function syncState() {
+        if (mq.matches) {
+            filterPanel.classList.toggle('collapsed', !hasActiveFilter);
+        } else {
+            filterPanel.classList.remove('collapsed');
+        }
+    }
+
     mq.addEventListener
-        ? mq.addEventListener('change', syncFilterState)
-        : mq.addListener(syncFilterState);
+        ? mq.addEventListener('change', syncState)
+        : mq.addListener(syncState);
 
     filterToggle.addEventListener('click', () => {
         if (!mq.matches) return;

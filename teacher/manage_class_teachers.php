@@ -158,6 +158,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect_with_flash('error', 'The headteacher cannot be assigned as a class teacher.');
         }
 
+        /* -------------------------------------------------------------
+           CONFIRM: the teacher actually teaches this class this year
+        ------------------------------------------------------------- */
+        $teach_check = mysqli_prepare(
+            $conn,
+            "SELECT 1 FROM teacher_assignments
+             WHERE teacher_id = ?
+               AND class_id = ?
+               AND academic_year_id = ?
+               AND status = 'active'
+             LIMIT 1"
+        );
+        mysqli_stmt_bind_param($teach_check, 'iii', $teacher_id, $class_id, $active_year_id);
+        mysqli_stmt_execute($teach_check);
+        mysqli_stmt_store_result($teach_check);
+        $teaches_class = mysqli_stmt_num_rows($teach_check) > 0;
+        mysqli_stmt_close($teach_check);
+
+        if (!$teaches_class) {
+            redirect_with_flash(
+                'error',
+                'This teacher does not teach the selected class. Only teachers assigned to this class can become its class teacher.'
+            );
+        }
+
         /* Begin transaction: demote existing + insert new */
         mysqli_begin_transaction($conn);
 
@@ -197,7 +222,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* -------------------------------------------------------------
-       UNASSIGN (deactivate)
+       UNASSIGN
     ------------------------------------------------------------- */
     if ($action === 'unassign') {
 
@@ -223,69 +248,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     /* -------------------------------------------------------------
-       REACTIVATE (re-assign someone who was previously removed)
-    ------------------------------------------------------------- */
-    if ($action === 'reactivate') {
-
-        $class_teacher_id = (int) ($_POST['class_teacher_id'] ?? 0);
-
-        if ($class_teacher_id <= 0) {
-            redirect_with_flash('error', 'Invalid assignment.');
-        }
-
-        /* Get the row first to know its class */
-        $stmt = mysqli_prepare(
-            $conn,
-            "SELECT class_id, academic_year_id FROM class_teachers WHERE class_teacher_id = ? LIMIT 1"
-        );
-        mysqli_stmt_bind_param($stmt, 'i', $class_teacher_id);
-        mysqli_stmt_execute($stmt);
-        $row = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
-        mysqli_stmt_close($stmt);
-
-        if (!$row) {
-            redirect_with_flash('error', 'Assignment not found.');
-        }
-
-        mysqli_begin_transaction($conn);
-
-        try {
-            /* Deactivate any other active for same class+year */
-            $stmt = mysqli_prepare(
-                $conn,
-                "UPDATE class_teachers
-                 SET status = 'inactive'
-                 WHERE class_id = ?
-                   AND academic_year_id = ?
-                   AND status = 'active'
-                   AND class_teacher_id <> ?"
-            );
-            mysqli_stmt_bind_param($stmt, 'iii', $row['class_id'], $row['academic_year_id'], $class_teacher_id);
-            mysqli_stmt_execute($stmt);
-            mysqli_stmt_close($stmt);
-
-            /* Reactivate this one */
-            $stmt = mysqli_prepare(
-                $conn,
-                "UPDATE class_teachers
-                 SET status = 'active', assigned_at = NOW()
-                 WHERE class_teacher_id = ?"
-            );
-            mysqli_stmt_bind_param($stmt, 'i', $class_teacher_id);
-            mysqli_stmt_execute($stmt);
-            mysqli_stmt_close($stmt);
-
-            mysqli_commit($conn);
-            redirect_with_flash('success', 'Class teacher reassigned.');
-
-        } catch (Exception $ex) {
-            mysqli_rollback($conn);
-            redirect_with_flash('error', 'Could not reassign: ' . $ex->getMessage());
-        }
-    }
-
-    /* -------------------------------------------------------------
-       DELETE PERMANENTLY
+       DELETE
     ------------------------------------------------------------- */
     if ($action === 'delete') {
 
@@ -314,7 +277,7 @@ unset($_SESSION['ct_flash']);
 
 
 /* =========================================================================
-   LOAD CLASSES (with current class teacher)
+   LOAD CLASSES
    ========================================================================= */
 
 $classes = [];
@@ -333,18 +296,23 @@ if ($res) {
         $row['current_teacher'] = null;
         $row['current_class_teacher_id'] = null;
         $row['student_count'] = 0;
+        $row['qualified_teachers'] = [];   // NEW: teachers who teach this class
         $classes[] = $row;
     }
 }
 
-/* Load existing active class teachers for the current year */
+
+/* =========================================================================
+   LOAD CURRENT CLASS TEACHERS (per class)
+   ========================================================================= */
+
 if ($active_year_id > 0 && !empty($classes)) {
 
-    $class_ids = array_column($classes, 'class_id');
+    $class_ids    = array_column($classes, 'class_id');
     $placeholders = implode(',', array_fill(0, count($class_ids), '?'));
-    $types = str_repeat('i', count($class_ids)) . 'i';
+    $types        = str_repeat('i', count($class_ids)) . 'i';
 
-    $params = $class_ids;
+    $params   = $class_ids;
     $params[] = $active_year_id;
 
     $stmt = mysqli_prepare(
@@ -355,11 +323,10 @@ if ($active_year_id > 0 && !empty($classes)) {
             ct.teacher_id,
             u.first_name,
             u.middle_name,
-            u.last_name,
-            t.employee_no
+            u.last_name
          FROM class_teachers ct
          INNER JOIN teachers t ON t.teacher_id = ct.teacher_id
-         INNER JOIN users u ON u.user_id = t.user_id
+         INNER JOIN users u    ON u.user_id    = t.user_id
          WHERE ct.class_id IN ($placeholders)
            AND ct.academic_year_id = ?
            AND ct.status = 'active'"
@@ -392,11 +359,103 @@ if ($active_year_id > 0 && !empty($classes)) {
     }
 }
 
-/* Student counts per class */
-if (!empty($classes)) {
-    $class_ids = array_column($classes, 'class_id');
+
+/* =========================================================================
+   LOAD QUALIFIED TEACHERS PER CLASS
+   ---------------------------------------------------------------------------
+   Only teachers who have an active assignment to the class this year
+   are eligible to be the class teacher.
+   ========================================================================= */
+
+if ($active_year_id > 0 && !empty($classes)) {
+
+    $class_ids    = array_column($classes, 'class_id');
     $placeholders = implode(',', array_fill(0, count($class_ids), '?'));
-    $types = str_repeat('i', count($class_ids));
+    $types        = str_repeat('i', count($class_ids)) . 'i';
+
+    $params   = $class_ids;
+    $params[] = $active_year_id;
+
+    $stmt = mysqli_prepare(
+        $conn,
+        "SELECT DISTINCT
+            ta.class_id,
+            t.teacher_id,
+            t.employee_no,
+            t.assignment_type,
+            t.specialization,
+            u.first_name,
+            u.middle_name,
+            u.last_name,
+            u.status AS user_status
+         FROM teacher_assignments ta
+         INNER JOIN teachers t ON t.teacher_id = ta.teacher_id
+         INNER JOIN users    u ON u.user_id    = t.user_id
+         WHERE ta.class_id IN ($placeholders)
+           AND ta.academic_year_id = ?
+           AND ta.status = 'active'
+           AND t.assignment_type <> 'headteacher'
+           AND u.status = 'active'
+         ORDER BY u.first_name ASC, u.last_name ASC"
+    );
+
+    if ($stmt) {
+        mysqli_stmt_bind_param($stmt, $types, ...$params);
+        mysqli_stmt_execute($stmt);
+        $res = mysqli_stmt_get_result($stmt);
+
+        $per_class = [];
+        while ($row = mysqli_fetch_assoc($res)) {
+            $row['full_name'] = trim(
+                $row['first_name'] . ' ' .
+                ($row['middle_name'] ? $row['middle_name'] . ' ' : '') .
+                $row['last_name']
+            );
+            $per_class[(int)$row['class_id']][] = $row;
+        }
+        mysqli_stmt_close($stmt);
+
+        foreach ($classes as &$c) {
+            $cid = (int)$c['class_id'];
+            $c['qualified_teachers'] = $per_class[$cid] ?? [];
+        }
+        unset($c);
+    }
+}
+
+
+/* =========================================================================
+   HOW MANY CLASSES EACH TEACHER ALREADY MANAGES (for the hint text)
+   ========================================================================= */
+
+$teacher_class_counts = [];
+
+if ($active_year_id > 0) {
+    $res = mysqli_query(
+        $conn,
+        "SELECT teacher_id, COUNT(*) AS c
+         FROM class_teachers
+         WHERE academic_year_id = $active_year_id
+           AND status = 'active'
+         GROUP BY teacher_id"
+    );
+    if ($res) {
+        while ($row = mysqli_fetch_assoc($res)) {
+            $teacher_class_counts[(int)$row['teacher_id']] = (int)$row['c'];
+        }
+    }
+}
+
+
+/* =========================================================================
+   STUDENT COUNTS
+   ========================================================================= */
+
+if (!empty($classes)) {
+
+    $class_ids    = array_column($classes, 'class_id');
+    $placeholders = implode(',', array_fill(0, count($class_ids), '?'));
+    $types        = str_repeat('i', count($class_ids));
 
     $stmt = mysqli_prepare(
         $conn,
@@ -424,58 +483,6 @@ if (!empty($classes)) {
 
 
 /* =========================================================================
-   LOAD AVAILABLE TEACHERS
-   ========================================================================= */
-
-$teachers = [];
-$res = mysqli_query(
-    $conn,
-    "SELECT
-        t.teacher_id,
-        t.employee_no,
-        t.assignment_type,
-        u.first_name,
-        u.middle_name,
-        u.last_name,
-        u.status AS user_status
-     FROM teachers t
-     INNER JOIN users u ON u.user_id = t.user_id
-     WHERE t.assignment_type <> 'headteacher'
-       AND u.status = 'active'
-     ORDER BY u.first_name ASC, u.last_name ASC"
-);
-
-if ($res) {
-    while ($row = mysqli_fetch_assoc($res)) {
-        $row['full_name'] = trim(
-            $row['first_name'] . ' ' .
-            ($row['middle_name'] ? $row['middle_name'] . ' ' : '') .
-            $row['last_name']
-        );
-        $teachers[] = $row;
-    }
-}
-
-/* Count how many classes each teacher already manages */
-$teacher_class_counts = [];
-if ($active_year_id > 0 && !empty($teachers)) {
-    $res = mysqli_query(
-        $conn,
-        "SELECT teacher_id, COUNT(*) AS c
-         FROM class_teachers
-         WHERE academic_year_id = $active_year_id
-           AND status = 'active'
-         GROUP BY teacher_id"
-    );
-    if ($res) {
-        while ($row = mysqli_fetch_assoc($res)) {
-            $teacher_class_counts[(int)$row['teacher_id']] = (int)$row['c'];
-        }
-    }
-}
-
-
-/* =========================================================================
    STATS
    ========================================================================= */
 
@@ -484,7 +491,6 @@ $classes_with_teacher = 0;
 foreach ($classes as $c) {
     if ($c['current_teacher']) $classes_with_teacher++;
 }
-
 $classes_without_teacher = $total_classes - $classes_with_teacher;
 
 ?>
@@ -517,8 +523,6 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
             --orange-bg: #faf5e8;
             --blue: #2f5d8f;
             --blue-bg: #eaf1fa;
-            --purple: #5a4a8f;
-            --purple-bg: #f0eefa;
             --sidebar-w: 250px;
             --topbar-h: 64px;
         }
@@ -750,19 +754,10 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
             text-decoration: none;
             white-space: nowrap;
             transition: .15s ease;
-            -webkit-tap-highlight-color: transparent;
         }
 
         .btn-primary { background: var(--navy); color: var(--white); }
         .btn-primary:hover { background: var(--navy-dark); }
-        .btn-primary:active { transform: scale(.98); }
-
-        .btn-ghost {
-            background: var(--white);
-            color: var(--navy);
-            border: 1px solid var(--border);
-        }
-        .btn-ghost:hover { border-color: var(--gold); }
 
         /* RESULTS BAR */
         .results-bar {
@@ -776,9 +771,7 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
         .results-bar h2 { color: var(--navy); font-size: 15px; }
         .results-count { color: var(--muted); font-size: 11.5px; }
 
-        /* =========================================================
-           CLASS CARDS
-        ========================================================= */
+        /* CLASS CARDS */
         .class-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
@@ -800,13 +793,8 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
             box-shadow: 0 10px 25px rgba(23,35,60,.06);
         }
 
-        .class-card.assigned {
-            border-left: 4px solid var(--green);
-        }
-
-        .class-card.unassigned {
-            border-left: 4px solid var(--orange);
-        }
+        .class-card.assigned   { border-left: 4px solid var(--green); }
+        .class-card.unassigned { border-left: 4px solid var(--orange); }
 
         .class-card-head {
             padding: 16px 18px 14px;
@@ -883,9 +871,7 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
             flex-shrink: 0;
         }
 
-        .current-teacher.empty .ct-avatar {
-            background: var(--orange);
-        }
+        .current-teacher.empty .ct-avatar { background: var(--orange); }
 
         .ct-info { min-width: 0; flex: 1; }
 
@@ -913,11 +899,10 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
             font-weight: 600;
         }
 
-        /* Actions on the current teacher block */
         .ct-actions {
             display: flex;
             gap: 6px;
-            margin-top: 12px;
+            margin-bottom: 12px;
         }
 
         .icon-btn {
@@ -950,6 +935,18 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
             margin-top: auto;
             padding-top: 12px;
             border-top: 1px solid #f0f1f3;
+        }
+
+        .assign-form .helper {
+            font-size: 11px;
+            color: var(--muted);
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+
+        .assign-form .helper strong { color: var(--navy); }
+
+        .assign-row {
             display: grid;
             grid-template-columns: 1fr auto;
             gap: 8px;
@@ -981,6 +978,12 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
             box-shadow: 0 0 0 3px rgba(201,162,39,.12);
         }
 
+        .assign-select:disabled {
+            background: #f0f1f3;
+            color: #a0a6b0;
+            cursor: not-allowed;
+        }
+
         .assign-btn {
             height: 42px;
             padding: 0 18px;
@@ -996,6 +999,25 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
         }
         .assign-btn:hover { background: var(--navy-dark); }
         .assign-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+        /* No eligible teachers banner */
+        .no-eligible {
+            padding: 12px 14px;
+            background: var(--orange-bg);
+            border: 1px dashed #ecd9a8;
+            border-radius: 8px;
+            color: var(--orange);
+            font-size: 11.5px;
+            font-weight: 600;
+            line-height: 1.5;
+            text-align: center;
+        }
+
+        .no-eligible a {
+            color: var(--orange);
+            font-weight: 800;
+            text-decoration: underline;
+        }
 
         /* EMPTY */
         .empty {
@@ -1019,9 +1041,7 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
         }
         .empty h3 { color: var(--navy); font-size: 15px; margin-bottom: 5px; }
 
-        /* =========================================================
-           RESPONSIVE
-        ========================================================= */
+        /* RESPONSIVE */
         @media (max-width: 900px) {
             .stats-grid { grid-template-columns: repeat(3, 1fr); }
             .filter-form { grid-template-columns: 1fr 1fr auto; }
@@ -1059,21 +1079,20 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
             .btn { min-height: 46px; font-size: 14px; }
 
             .class-grid { grid-template-columns: 1fr; gap: 12px; }
-
             .class-card-head { padding: 14px 16px 12px; }
             .class-card-body { padding: 12px 16px 16px; }
-
             .class-icon { width: 42px; height: 42px; font-size: 14px; }
 
             .ct-actions { flex-direction: column; }
             .ct-actions .icon-btn { min-height: 42px; font-size: 12.5px; }
+
+            .assign-row { grid-template-columns: 1fr; }
+            .assign-select, .assign-btn { width: 100%; min-height: 46px; font-size: 14px; }
         }
 
         @media (max-width: 550px) {
             .main-content { padding: calc(var(--topbar-h) + 14px) 14px 24px; }
-
             .page-title h1 { font-size: 19px; }
-            .page-title p  { font-size: 11.5px; }
 
             .stats-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
             .stats-grid .stat-card:last-child { grid-column: 1 / -1; }
@@ -1086,9 +1105,6 @@ $classes_without_teacher = $total_classes - $classes_with_teacher;
 
             .ct-avatar { width: 38px; height: 38px; font-size: 13px; }
             .ct-name   { font-size: 13px; }
-
-            .assign-form { grid-template-columns: 1fr; }
-            .assign-select, .assign-btn { width: 100%; }
         }
 
         @media (max-width: 800px) {
@@ -1120,7 +1136,7 @@ include '../includes/topbar.php';
     <div class="page-header">
         <div class="page-title">
             <h1>Class Teachers</h1>
-            <p>Assign one class teacher to each class for the active academic year.</p>
+            <p>Assign one class teacher to each class. Only teachers who teach that class are eligible.</p>
         </div>
 
         <?php if ($active_year): ?>
@@ -1137,7 +1153,6 @@ include '../includes/topbar.php';
         </div>
     <?php endif; ?>
 
-    <!-- WARN: NO ACTIVE YEAR -->
     <?php if (!$active_year): ?>
         <div class="alert error">
             There is no active academic year. Please activate one from
@@ -1179,7 +1194,6 @@ include '../includes/topbar.php';
         </button>
 
         <form method="GET" action="manage_class_teachers.php" class="filter-form">
-
             <div class="filter-group">
                 <label>Search Class</label>
                 <input type="text" name="q" class="filter-control"
@@ -1197,7 +1211,6 @@ include '../includes/topbar.php';
             </div>
 
             <button type="submit" class="btn btn-primary">Filter</button>
-
         </form>
     </section>
     <?php endif; ?>
@@ -1212,14 +1225,11 @@ include '../includes/topbar.php';
 
     <!-- CLASS GRID -->
     <?php
-    /* Apply client-side filter */
     $search_q = strtolower(trim($_GET['q'] ?? ''));
     $show_q   = $_GET['show'] ?? '';
 
     $filtered_classes = array_filter($classes, function ($c) use ($search_q, $show_q) {
-        if ($search_q !== '' && strpos(strtolower($c['label']), $search_q) === false) {
-            return false;
-        }
+        if ($search_q !== '' && strpos(strtolower($c['label']), $search_q) === false) return false;
         if ($show_q === 'assigned'   && !$c['current_teacher']) return false;
         if ($show_q === 'unassigned' &&  $c['current_teacher']) return false;
         return true;
@@ -1227,13 +1237,11 @@ include '../includes/topbar.php';
 
     if (empty($filtered_classes)):
     ?>
-
         <div class="empty">
             <div class="empty-icon">🏫</div>
             <h3>No classes match</h3>
             <p>Try a different search or clear the filter.</p>
         </div>
-
     <?php else: ?>
 
         <div class="class-grid">
@@ -1243,6 +1251,8 @@ include '../includes/topbar.php';
                     ? strtoupper(mb_substr($c['current_teacher'], 0, 1))
                     : '?';
                 $current_ct_id = $c['current_class_teacher_id'] ?? 0;
+                $eligible = $c['qualified_teachers'];
+                $eligible_count = count($eligible);
             ?>
                 <div class="class-card <?php echo $has_teacher ? 'assigned' : 'unassigned'; ?>">
 
@@ -1255,6 +1265,7 @@ include '../includes/topbar.php';
                             <div class="class-meta">
                                 Level <?php echo (int)$c['class_level']; ?>
                                 · <?php echo (int)$c['student_count']; ?> student<?php echo (int)$c['student_count'] === 1 ? '' : 's'; ?>
+                                · <?php echo $eligible_count; ?> eligible teacher<?php echo $eligible_count === 1 ? '' : 's'; ?>
                             </div>
                         </div>
                     </div>
@@ -1271,9 +1282,7 @@ include '../includes/topbar.php';
                                     <?php echo $has_teacher ? 'Current Class Teacher' : 'No Class Teacher'; ?>
                                 </div>
                                 <div class="ct-name">
-                                    <?php echo $has_teacher
-                                        ? e($c['current_teacher'])
-                                        : 'Not yet assigned'; ?>
+                                    <?php echo $has_teacher ? e($c['current_teacher']) : 'Not yet assigned'; ?>
                                 </div>
                             </div>
                         </div>
@@ -1290,30 +1299,51 @@ include '../includes/topbar.php';
                             </div>
                         <?php endif; ?>
 
-                        <!-- ASSIGN / CHANGE -->
+                        <!-- ASSIGN / CHANGE — ONLY ELIGIBLE TEACHERS -->
                         <form method="POST" action="manage_class_teachers.php" class="assign-form">
                             <input type="hidden" name="action" value="assign">
                             <input type="hidden" name="class_id" value="<?php echo (int)$c['class_id']; ?>">
 
-                            <select name="teacher_id" class="assign-select" required
-                                <?php echo $active_year ? '' : 'disabled'; ?>>
-                                <option value="">
-                                    <?php echo $has_teacher ? '— Change to another teacher —' : '— Select teacher —'; ?>
-                                </option>
-                                <?php foreach ($teachers as $t):
-                                    $already = $teacher_class_counts[(int)$t['teacher_id']] ?? 0;
-                                    $hint = $already > 0 ? " · currently {$already} class" . ($already === 1 ? '' : 'es') : '';
-                                ?>
-                                    <option value="<?php echo (int)$t['teacher_id']; ?>">
-                                        <?php echo e($t['full_name']); ?><?php echo e($hint); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
+                            <?php if ($eligible_count === 0): ?>
 
-                            <button type="submit" class="assign-btn"
-                                <?php echo $active_year ? '' : 'disabled'; ?>>
-                                <?php echo $has_teacher ? 'Change' : 'Assign'; ?>
-                            </button>
+                                <div class="no-eligible">
+                                    No teachers are currently assigned to teach this class.
+                                    <br>
+                                    <a href="manage_assignments.php">Assign subjects first</a>
+                                    to make a teacher eligible.
+                                </div>
+
+                            <?php else: ?>
+
+                                <div class="helper">
+                                    Showing only teachers who teach
+                                    <strong><?php echo e($c['label']); ?></strong>:
+                                </div>
+
+                                <div class="assign-row">
+                                    <select name="teacher_id" class="assign-select" required
+                                        <?php echo $active_year ? '' : 'disabled'; ?>>
+                                        <option value="">
+                                            <?php echo $has_teacher ? '— Change to another teacher —' : '— Select teacher —'; ?>
+                                        </option>
+                                        <?php foreach ($eligible as $t):
+                                            $already = $teacher_class_counts[(int)$t['teacher_id']] ?? 0;
+                                            $hint = $already > 0 ? " · currently {$already} class" . ($already === 1 ? '' : 'es') : '';
+                                        ?>
+                                            <option value="<?php echo (int)$t['teacher_id']; ?>">
+                                                <?php echo e($t['full_name']); ?><?php echo e($hint); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+
+                                    <button type="submit" class="assign-btn"
+                                        <?php echo $active_year ? '' : 'disabled'; ?>>
+                                        <?php echo $has_teacher ? 'Change' : 'Assign'; ?>
+                                    </button>
+                                </div>
+
+                            <?php endif; ?>
+
                         </form>
 
                     </div>
@@ -1328,9 +1358,6 @@ include '../includes/topbar.php';
 
 
 <script>
-/* =========================================================
-   FILTER PANEL COLLAPSE (mobile only)
-========================================================= */
 (function () {
     const filterPanel  = document.getElementById('filterPanel');
     const filterToggle = document.getElementById('filterToggle');

@@ -74,35 +74,63 @@ $parent_name = trim(
 
 $children = [];
 
-if (tableExists($conn, 'student_parents')) {
+$sql = "
+    SELECT
+        s.student_id,
+        s.admission_no,
+        s.full_name,
+        s.gender,
+        s.date_of_birth,
+        s.photo,
+        s.status AS student_status,
 
-    $stmt = mysqli_prepare(
-        $conn,
-        "SELECT
-            s.student_id,
-            s.admission_no,
-            s.full_name,
-            s.gender,
-            s.date_of_birth,
-            s.photo,
-            s.status AS student_status,
-            c.class_id,
-            c.class_name,
-            c.stream,
-            c.class_level,
-            sp.relationship,
-            sp.is_primary_guardian
-         FROM student_parents sp
-         INNER JOIN students s ON s.student_id = sp.student_id
-         LEFT JOIN classes c ON c.class_id = s.class_id
-         WHERE sp.parent_id = ?
-         ORDER BY s.full_name ASC"
-    );
+        c.class_id,
+        c.class_name,
+        c.stream,
+        c.class_level,
 
+        pc.relationship,
+        pc.is_primary_guardian,
+
+        (
+            SELECT TRIM(CONCAT(
+                tu.first_name, ' ',
+                IFNULL(tu.middle_name, ''), ' ',
+                tu.last_name
+            ))
+            FROM class_teachers ct
+            INNER JOIN teachers t ON t.teacher_id = ct.teacher_id
+            INNER JOIN users tu   ON tu.user_id  = t.user_id
+            WHERE ct.class_id = c.class_id
+              AND ct.status   = 'active'
+            ORDER BY ct.assigned_at DESC
+            LIMIT 1
+        ) AS class_teacher_name,
+
+        (
+            SELECT tu.phone
+            FROM class_teachers ct
+            INNER JOIN teachers t ON t.teacher_id = ct.teacher_id
+            INNER JOIN users tu   ON tu.user_id  = t.user_id
+            WHERE ct.class_id = c.class_id
+              AND ct.status   = 'active'
+            ORDER BY ct.assigned_at DESC
+            LIMIT 1
+        ) AS class_teacher_phone
+
+    FROM parent_children pc
+    INNER JOIN students s ON s.student_id = pc.student_id
+    LEFT JOIN classes  c  ON c.class_id   = s.class_id
+    WHERE pc.parent_id = ?
+    ORDER BY c.class_level ASC, s.full_name ASC
+";
+
+$stmt = mysqli_prepare($conn, $sql);
+
+if ($stmt) {
     mysqli_stmt_bind_param($stmt, 'i', $parent_id);
     mysqli_stmt_execute($stmt);
     $res = mysqli_stmt_get_result($stmt);
-
     while ($row = mysqli_fetch_assoc($res)) {
         $children[] = $row;
     }
@@ -111,24 +139,24 @@ if (tableExists($conn, 'student_parents')) {
 
 
 /* =========================================================================
-   ATTENDANCE SUMMARY (optional)
+   ATTENDANCE SUMMARY
    ========================================================================= */
 
 $attendance_summary = [];
 
 if (tableExists($conn, 'attendance') && !empty($children)) {
 
-    $child_ids = array_column($children, 'student_id');
+    $child_ids    = array_column($children, 'student_id');
     $placeholders = implode(',', array_fill(0, count($child_ids), '?'));
-    $types = str_repeat('i', count($child_ids));
+    $types        = str_repeat('i', count($child_ids));
 
     $sql = "
         SELECT
             student_id,
-            COUNT(*) AS total_days,
-            SUM(status = 'present') AS present_days,
-            SUM(status = 'absent')  AS absent_days,
-            SUM(status = 'late')    AS late_days
+            COUNT(*)                 AS total_days,
+            SUM(status = 'present')  AS present_days,
+            SUM(status = 'absent')   AS absent_days,
+            SUM(status = 'late')     AS late_days
         FROM attendance
         WHERE student_id IN ($placeholders)
         GROUP BY student_id
@@ -148,29 +176,32 @@ if (tableExists($conn, 'attendance') && !empty($children)) {
 
 
 /* =========================================================================
-   RECENT RESULTS (optional)
+   RECENT RESULTS
    ========================================================================= */
 
 $recent_results = [];
 
 if (tableExists($conn, 'results') && !empty($children)) {
 
-    $child_ids = array_column($children, 'student_id');
+    $child_ids    = array_column($children, 'student_id');
     $placeholders = implode(',', array_fill(0, count($child_ids), '?'));
-    $types = str_repeat('i', count($child_ids));
+    $types        = str_repeat('i', count($child_ids));
 
     $sql = "
         SELECT
+            r.result_id,
             r.student_id,
+            r.subject_id,
+            r.term,
             r.marks,
             r.grade,
-            r.exam_name,
+            r.remarks,
             r.created_at,
             s.subject_name
         FROM results r
         LEFT JOIN subjects s ON s.subject_id = r.subject_id
         WHERE r.student_id IN ($placeholders)
-        ORDER BY r.created_at DESC
+        ORDER BY r.created_at DESC, r.result_id DESC
         LIMIT 6
     ";
 
@@ -188,7 +219,7 @@ if (tableExists($conn, 'results') && !empty($children)) {
 
 
 /* =========================================================================
-   UPCOMING EVENTS (optional, from public site table)
+   UPCOMING EVENTS
    ========================================================================= */
 
 $upcoming_events = [];
@@ -211,7 +242,7 @@ if (tableExists($conn, 'events')) {
 
 
 /* =========================================================================
-   RECENT NEWS (optional)
+   RECENT NEWS
    ========================================================================= */
 
 $recent_news = [];
@@ -236,14 +267,12 @@ if (tableExists($conn, 'news')) {
    STATS
    ========================================================================= */
 
-$total_children     = count($children);
-$primary_children   = 0;
+$total_children   = count($children);
+$primary_children = 0;
+$active_children  = 0;
+
 foreach ($children as $c) {
     if (!empty($c['is_primary_guardian'])) $primary_children++;
-}
-
-$active_children = 0;
-foreach ($children as $c) {
     if (strtolower($c['student_status'] ?? '') === 'active') $active_children++;
 }
 
@@ -255,6 +284,15 @@ foreach ($children as $c) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#17233c">
     <title>Parent Dashboard | PSRMS</title>
+
+    <!-- =========================================================
+         FONT AWESOME
+    ========================================================= -->
+    <link rel="stylesheet"
+          href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
+          integrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A=="
+          crossorigin="anonymous"
+          referrerpolicy="no-referrer">
 
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -293,7 +331,6 @@ foreach ($children as $c) {
 
         body.no-scroll { overflow: hidden; }
 
-        /* LAYOUT */
         .main-content {
             margin-left: var(--sidebar-w);
             padding: calc(var(--topbar-h) + 30px) 30px 40px;
@@ -304,10 +341,7 @@ foreach ($children as $c) {
             body.sidebar-collapsed .main-content { margin-left: 78px; }
         }
 
-        /* WELCOME */
-        .welcome {
-            margin-bottom: 25px;
-        }
+        .welcome { margin-bottom: 25px; }
 
         .welcome h1 {
             color: var(--navy);
@@ -337,12 +371,33 @@ foreach ($children as $c) {
             border-radius: 10px;
             padding: 18px 20px;
             transition: .2s ease;
+            display: flex;
+            align-items: center;
+            gap: 14px;
         }
 
         .stat-card:hover {
             border-color: rgba(201,162,39,.4);
             box-shadow: 0 8px 20px rgba(23,35,60,.05);
         }
+
+        .stat-icon {
+            width: 46px;
+            height: 46px;
+            border-radius: 12px;
+            background: var(--blue-bg);
+            color: var(--blue);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .stat-icon.gold  { background: var(--gold-light); color: var(--navy); }
+        .stat-icon.green { background: var(--green-bg);   color: var(--green); }
+
+        .stat-body { min-width: 0; }
 
         .stat-card .label {
             color: var(--muted);
@@ -354,9 +409,9 @@ foreach ($children as $c) {
 
         .stat-card .value {
             color: var(--navy);
-            font-size: 24px;
+            font-size: 22px;
             font-weight: 750;
-            margin-top: 6px;
+            margin-top: 3px;
         }
 
         /* SECTION */
@@ -382,6 +437,14 @@ foreach ($children as $c) {
             color: var(--navy);
             font-size: 13.5px;
             font-weight: 750;
+            display: flex;
+            align-items: center;
+            gap: 9px;
+        }
+
+        .section-header h2 i {
+            color: var(--gold);
+            font-size: 14px;
         }
 
         .section-header span {
@@ -390,12 +453,9 @@ foreach ($children as $c) {
         }
 
         .section-body { padding: 22px; }
-
         .section-body.tight { padding: 12px 22px; }
 
-        /* =========================================================
-           CHILDREN CARDS
-        ========================================================= */
+        /* CHILDREN CARDS */
         .children-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -467,6 +527,8 @@ foreach ($children as $c) {
             gap: 10px 14px;
         }
 
+        .meta-item { min-width: 0; }
+
         .meta-item .k {
             color: var(--muted);
             font-size: 9.5px;
@@ -474,6 +536,14 @@ foreach ($children as $c) {
             text-transform: uppercase;
             letter-spacing: .6px;
             margin-bottom: 3px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .meta-item .k i {
+            font-size: 10px;
+            color: var(--gold);
         }
 
         .meta-item .v {
@@ -482,6 +552,8 @@ foreach ($children as $c) {
             font-weight: 600;
             overflow-wrap: anywhere;
         }
+
+        .meta-item.full { grid-column: 1 / -1; }
 
         /* STATUS PILL */
         .status-pill {
@@ -515,9 +587,44 @@ foreach ($children as $c) {
         .status-transferred { color: var(--red);    background: var(--red-bg); }
         .status-transferred::before { background: var(--red); }
 
-        /* =========================================================
-           EMPTY
-        ========================================================= */
+        /* TEACHER / PHONE CHIPS */
+        .teacher-chip,
+        .phone-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 11px;
+            border-radius: 20px;
+            font-size: 11.5px;
+            font-weight: 700;
+            max-width: 100%;
+            overflow-wrap: anywhere;
+        }
+
+        .teacher-chip {
+            background: #eef2f7;
+            color: var(--navy);
+        }
+
+        .teacher-chip i { color: var(--blue); font-size: 11px; }
+
+        .phone-chip {
+            background: var(--green-bg);
+            color: var(--green);
+            text-decoration: none;
+            border: 1px solid #cfe5d7;
+            transition: .15s ease;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .phone-chip i { font-size: 11px; }
+
+        .phone-chip:hover {
+            background: #d7eee1;
+            border-color: var(--green);
+        }
+
+        /* EMPTY */
         .empty {
             text-align: center;
             padding: 40px 20px;
@@ -536,7 +643,6 @@ foreach ($children as $c) {
             align-items: center;
             justify-content: center;
             font-size: 22px;
-            font-weight: 800;
         }
 
         .empty h3 {
@@ -545,9 +651,7 @@ foreach ($children as $c) {
             margin-bottom: 4px;
         }
 
-        /* =========================================================
-           LIST ROWS (events / news / results)
-        ========================================================= */
+        /* LIST ROWS */
         .list-row {
             display: flex;
             align-items: flex-start;
@@ -592,7 +696,13 @@ foreach ($children as $c) {
             font-size: 11px;
             line-height: 1.5;
             overflow-wrap: anywhere;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
         }
+
+        .list-meta i { font-size: 10px; color: var(--gold); }
 
         .list-sub {
             color: var(--muted);
@@ -606,7 +716,6 @@ foreach ($children as $c) {
             overflow: hidden;
         }
 
-        /* 2-column layout for lower panels */
         .grid-2 {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -614,7 +723,6 @@ foreach ($children as $c) {
             margin-bottom: 20px;
         }
 
-        /* RESPONSIVE */
         @media (max-width: 1100px) {
             .grid-2 { grid-template-columns: 1fr; }
         }
@@ -637,8 +745,14 @@ foreach ($children as $c) {
                 margin-bottom: 18px;
             }
 
-            .stat-card { padding: 14px; }
-            .stat-card .value { font-size: 19px; }
+            .stat-card {
+                padding: 12px;
+                gap: 10px;
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .stat-icon { width: 38px; height: 38px; font-size: 15px; }
+            .stat-card .value { font-size: 18px; }
             .stat-card .label { font-size: 9px; }
 
             .section-header { padding: 14px 18px; }
@@ -659,8 +773,8 @@ foreach ($children as $c) {
             .welcome p  { font-size: 11.5px; }
 
             .stats-grid { gap: 8px; }
-            .stat-card  { padding: 12px; }
-            .stat-card .value { font-size: 18px; }
+            .stat-card  { padding: 11px; }
+            .stat-card .value { font-size: 17px; }
 
             .section-header { padding: 12px 14px; }
             .section-body { padding: 14px; }
@@ -705,30 +819,48 @@ include '../includes/topbar.php';
 
     <!-- WELCOME -->
     <section class="welcome">
-        <h1>Welcome back, <?php echo e($parent['first_name']); ?>.</h1>
+        <h1>Welcome back, <?php echo e($parent['first_name']); ?>. 👋</h1>
         <p>Here's an overview of your children and school updates.</p>
     </section>
 
     <!-- STATS -->
     <div class="stats-grid">
         <div class="stat-card">
-            <div class="label">Children</div>
-            <div class="value"><?php echo number_format($total_children); ?></div>
+            <div class="stat-icon">
+                <i class="fa-solid fa-children"></i>
+            </div>
+            <div class="stat-body">
+                <div class="label">Children</div>
+                <div class="value"><?php echo number_format($total_children); ?></div>
+            </div>
         </div>
         <div class="stat-card">
-            <div class="label">Active</div>
-            <div class="value"><?php echo number_format($active_children); ?></div>
+            <div class="stat-icon green">
+                <i class="fa-solid fa-circle-check"></i>
+            </div>
+            <div class="stat-body">
+                <div class="label">Active</div>
+                <div class="value"><?php echo number_format($active_children); ?></div>
+            </div>
         </div>
         <div class="stat-card">
-            <div class="label">Primary Guardian</div>
-            <div class="value"><?php echo number_format($primary_children); ?></div>
+            <div class="stat-icon gold">
+                <i class="fa-solid fa-star"></i>
+            </div>
+            <div class="stat-body">
+                <div class="label">Primary Guardian</div>
+                <div class="value"><?php echo number_format($primary_children); ?></div>
+            </div>
         </div>
     </div>
 
     <!-- CHILDREN -->
     <section class="section-block">
         <div class="section-header">
-            <h2>My Children</h2>
+            <h2>
+                <i class="fa-solid fa-user-group"></i>
+                My Children
+            </h2>
             <span>
                 <?php echo $total_children === 1 ? '1 child' : $total_children . ' children'; ?>
             </span>
@@ -739,7 +871,9 @@ include '../includes/topbar.php';
             <?php if (empty($children)): ?>
 
                 <div class="empty">
-                    <div class="empty-icon">👧</div>
+                    <div class="empty-icon">
+                        <i class="fa-solid fa-child-reaching"></i>
+                    </div>
                     <h3>No children linked yet</h3>
                     <p>Please contact the school administration to link your children to your account.</p>
                 </div>
@@ -781,41 +915,96 @@ include '../includes/topbar.php';
                             <div class="child-meta">
 
                                 <div class="meta-item">
-                                    <div class="k">Status</div>
+                                    <div class="k">
+                                        <i class="fa-solid fa-circle-dot"></i> Status
+                                    </div>
                                     <span class="status-pill status-<?php echo e($status); ?>">
                                         <?php echo e($status); ?>
                                     </span>
                                 </div>
 
                                 <div class="meta-item">
-                                    <div class="k">Class</div>
+                                    <div class="k">
+                                        <i class="fa-solid fa-chalkboard"></i> Class
+                                    </div>
                                     <div class="v"><?php echo e($class_label); ?></div>
                                 </div>
 
                                 <div class="meta-item">
-                                    <div class="k">Gender</div>
+                                    <div class="k">
+                                        <i class="fa-solid fa-venus-mars"></i> Gender
+                                    </div>
                                     <div class="v"><?php echo e($c['gender'] ?: '—'); ?></div>
                                 </div>
 
                                 <div class="meta-item">
-                                    <div class="k">Relationship</div>
+                                    <div class="k">
+                                        <i class="fa-solid fa-heart"></i> Relationship
+                                    </div>
                                     <div class="v">
                                         <?php echo e($c['relationship'] ?: 'Guardian'); ?>
                                         <?php if (!empty($c['is_primary_guardian'])): ?>
-                                            ★
+                                            <i class="fa-solid fa-star" style="color:var(--gold);font-size:11px;"></i>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+
+                                <!-- CLASS TEACHER -->
+                                <div class="meta-item full">
+                                    <div class="k">
+                                        <i class="fa-solid fa-user-tie"></i> Class Teacher
+                                    </div>
+                                    <div class="v">
+                                        <?php if (!empty($c['class_teacher_name'])): ?>
+
+                                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:2px;">
+
+                                                <span class="teacher-chip">
+                                                    <i class="fa-solid fa-user"></i>
+                                                    <?php echo e($c['class_teacher_name']); ?>
+                                                </span>
+
+                                                <?php if (!empty($c['class_teacher_phone'])): ?>
+                                                    <a href="tel:<?php echo e($c['class_teacher_phone']); ?>"
+                                                       class="phone-chip">
+                                                        <i class="fa-solid fa-phone"></i>
+                                                        <?php echo e($c['class_teacher_phone']); ?>
+                                                    </a>
+                                                <?php else: ?>
+                                                    <span style="color:#9ca3af;font-size:11.5px;">
+                                                        <i class="fa-solid fa-phone-slash"></i>
+                                                        Phone not available
+                                                    </span>
+                                                <?php endif; ?>
+
+                                            </div>
+
+                                        <?php else: ?>
+                                            <span style="color:#9ca3af;">
+                                                <i class="fa-solid fa-user-slash"></i>
+                                                Not assigned
+                                            </span>
                                         <?php endif; ?>
                                     </div>
                                 </div>
 
                                 <?php if ($att_pct !== null): ?>
                                     <div class="meta-item">
-                                        <div class="k">Attendance</div>
+                                        <div class="k">
+                                            <i class="fa-solid fa-calendar-check"></i> Attendance
+                                        </div>
                                         <div class="v"><?php echo (int)$att_pct; ?>%</div>
                                     </div>
 
                                     <div class="meta-item">
-                                        <div class="k">Days Present</div>
-                                        <div class="v"><?php echo (int)$att['present_days']; ?> / <?php echo (int)$att['total_days']; ?></div>
+                                        <div class="k">
+                                            <i class="fa-solid fa-check"></i> Days Present
+                                        </div>
+                                        <div class="v">
+                                            <?php echo (int)$att['present_days']; ?>
+                                            /
+                                            <?php echo (int)$att['total_days']; ?>
+                                        </div>
                                     </div>
                                 <?php endif; ?>
 
@@ -830,11 +1019,14 @@ include '../includes/topbar.php';
         </div>
     </section>
 
-    <!-- RECENT RESULTS + ATTENDANCE -->
+    <!-- RECENT RESULTS -->
     <?php if (!empty($recent_results)): ?>
         <section class="section-block">
             <div class="section-header">
-                <h2>Recent Results</h2>
+                <h2>
+                    <i class="fa-solid fa-chart-line"></i>
+                    Recent Results
+                </h2>
                 <span>Latest 6</span>
             </div>
 
@@ -850,21 +1042,35 @@ include '../includes/topbar.php';
                     $student_name = $student ? $student['full_name'] : 'Student';
                 ?>
                     <div class="list-row">
-                        <div class="list-icon gold"><?php echo e($r['grade'] ?: '—'); ?></div>
+                        <div class="list-icon gold">
+                            <?php echo e($r['grade'] ?: '—'); ?>
+                        </div>
                         <div class="list-body">
                             <div class="list-title">
                                 <?php echo e($r['subject_name'] ?: 'Subject'); ?>
                                 — <?php echo e($r['marks']); ?> marks
                             </div>
                             <div class="list-meta">
-                                <?php echo e($student_name); ?>
-                                <?php if (!empty($r['exam_name'])): ?>
-                                    · <?php echo e($r['exam_name']); ?>
+                                <span>
+                                    <i class="fa-solid fa-user"></i>
+                                    <?php echo e($student_name); ?>
+                                </span>
+                                <?php if (!empty($r['term'])): ?>
+                                    <span>
+                                        <i class="fa-solid fa-book"></i>
+                                        <?php echo e($r['term']); ?>
+                                    </span>
                                 <?php endif; ?>
                                 <?php if (!empty($r['created_at'])): ?>
-                                    · <?php echo e(date('M j, Y', strtotime($r['created_at']))); ?>
+                                    <span>
+                                        <i class="fa-solid fa-calendar"></i>
+                                        <?php echo e(date('M j, Y', strtotime($r['created_at']))); ?>
+                                    </span>
                                 <?php endif; ?>
                             </div>
+                            <?php if (!empty($r['remarks'])): ?>
+                                <div class="list-sub"><?php echo e($r['remarks']); ?></div>
+                            <?php endif; ?>
                         </div>
                     </div>
                 <?php endforeach; ?>
@@ -878,7 +1084,10 @@ include '../includes/topbar.php';
         <!-- EVENTS -->
         <section class="section-block" style="margin-bottom:0;">
             <div class="section-header">
-                <h2>Upcoming Events</h2>
+                <h2>
+                    <i class="fa-solid fa-calendar-days"></i>
+                    Upcoming Events
+                </h2>
                 <span>School calendar</span>
             </div>
 
@@ -898,12 +1107,21 @@ include '../includes/topbar.php';
                             <div class="list-body">
                                 <div class="list-title"><?php echo e($ev['title']); ?></div>
                                 <div class="list-meta">
-                                    <?php echo $ts ? date('l, F j, Y', $ts) : e($ev['event_date']); ?>
+                                    <span>
+                                        <i class="fa-solid fa-calendar"></i>
+                                        <?php echo $ts ? date('l, F j, Y', $ts) : e($ev['event_date']); ?>
+                                    </span>
                                     <?php if (!empty($ev['event_time'])): ?>
-                                        · <?php echo e(date('g:i A', strtotime($ev['event_time']))); ?>
+                                        <span>
+                                            <i class="fa-solid fa-clock"></i>
+                                            <?php echo e(date('g:i A', strtotime($ev['event_time']))); ?>
+                                        </span>
                                     <?php endif; ?>
                                     <?php if (!empty($ev['location'])): ?>
-                                        · <?php echo e($ev['location']); ?>
+                                        <span>
+                                            <i class="fa-solid fa-location-dot"></i>
+                                            <?php echo e($ev['location']); ?>
+                                        </span>
                                     <?php endif; ?>
                                 </div>
                             </div>
@@ -916,7 +1134,10 @@ include '../includes/topbar.php';
         <!-- NEWS -->
         <section class="section-block" style="margin-bottom:0;">
             <div class="section-header">
-                <h2>Recent News</h2>
+                <h2>
+                    <i class="fa-solid fa-newspaper"></i>
+                    Recent News
+                </h2>
                 <span>School updates</span>
             </div>
 
@@ -930,13 +1151,21 @@ include '../includes/topbar.php';
                         $ts = strtotime($n['news_date']);
                     ?>
                         <div class="list-row">
-                            <div class="list-icon green">📰</div>
+                            <div class="list-icon green">
+                                <i class="fa-solid fa-newspaper"></i>
+                            </div>
                             <div class="list-body">
                                 <div class="list-title"><?php echo e($n['title']); ?></div>
                                 <div class="list-meta">
-                                    <?php echo ucfirst(e($n['category'])); ?>
+                                    <span>
+                                        <i class="fa-solid fa-tag"></i>
+                                        <?php echo ucfirst(e($n['category'])); ?>
+                                    </span>
                                     <?php if ($ts): ?>
-                                        · <?php echo e(date('M j, Y', $ts)); ?>
+                                        <span>
+                                            <i class="fa-solid fa-calendar"></i>
+                                            <?php echo e(date('M j, Y', $ts)); ?>
+                                        </span>
                                     <?php endif; ?>
                                 </div>
                                 <?php if (!empty($n['excerpt'])): ?>
@@ -952,6 +1181,41 @@ include '../includes/topbar.php';
     </div>
 
 </main>
+
+
+<script>
+/* =========================================================================
+   MOBILE SIDEBAR
+   ========================================================================= */
+
+const hamburgerBtn   = document.getElementById('hamburgerBtn');
+const sidebarOverlay = document.getElementById('sidebarOverlay');
+
+function openSidebar() {
+    document.body.classList.add('no-scroll');
+    sidebarOverlay.classList.add('open');
+    const s = document.querySelector('.parent-sidebar, .admin-sidebar, .teacher-sidebar, #sidebar, .sidebar');
+    if (s) s.classList.add('open');
+    if (hamburgerBtn) hamburgerBtn.classList.add('active');
+}
+function closeSidebar() {
+    sidebarOverlay.classList.remove('open');
+    const s = document.querySelector('.parent-sidebar, .admin-sidebar, .teacher-sidebar, #sidebar, .sidebar');
+    if (s) s.classList.remove('open');
+    if (hamburgerBtn) hamburgerBtn.classList.remove('active');
+    document.body.classList.remove('no-scroll');
+}
+
+if (hamburgerBtn) {
+    hamburgerBtn.addEventListener('click', () => {
+        if (sidebarOverlay.classList.contains('open')) closeSidebar();
+        else openSidebar();
+    });
+}
+if (sidebarOverlay) sidebarOverlay.addEventListener('click', closeSidebar);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSidebar(); });
+window.addEventListener('resize', () => { if (window.innerWidth > 900) closeSidebar(); });
+</script>
 
 </body>
 </html>

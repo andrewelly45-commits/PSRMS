@@ -5,14 +5,27 @@ session_start();
 require_once '../includes/db.php';
 
 
+/*
+|--------------------------------------------------------------------------
+| Only POST requests are allowed
+|--------------------------------------------------------------------------
+*/
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+
     header("Location: ../login.php");
     exit;
 }
 
 
-$email = trim($_POST['email'] ?? '');
-$password = $_POST['password'] ?? '';
+/*
+|--------------------------------------------------------------------------
+| Get login information
+|--------------------------------------------------------------------------
+*/
+
+$identifier = trim($_POST['identifier'] ?? '');
+$password   = $_POST['password'] ?? '';
 
 
 /*
@@ -21,9 +34,9 @@ $password = $_POST['password'] ?? '';
 |--------------------------------------------------------------------------
 */
 
-if ($email === '' || $password === '') {
+if ($identifier === '') {
 
-    $_SESSION['login_error'] = "Please enter your email and password.";
+    $_SESSION['login_error'] = "Please enter your phone number or email.";
 
     header("Location: ../login.php");
     exit;
@@ -32,7 +45,19 @@ if ($email === '' || $password === '') {
 
 /*
 |--------------------------------------------------------------------------
-| Find user
+| Find user by email OR phone
+|--------------------------------------------------------------------------
+|
+| We intentionally search by both.
+|
+| Example:
+|
+| Email:
+| parent@example.com
+|
+| Phone:
+| 0712345678
+|
 |--------------------------------------------------------------------------
 */
 
@@ -47,22 +72,35 @@ $sql = "SELECT
             gender,
             phone,
             profile_pic,
-            status
+            status,
+            activation_code_hash,
+            activation_expires_at
         FROM users
         WHERE email = ?
+           OR phone = ?
         LIMIT 1";
+
 
 $stmt = mysqli_prepare($conn, $sql);
 
+
 if (!$stmt) {
 
-    $_SESSION['login_error'] = "Unable to process your request.";
+    $_SESSION['login_error'] =
+        "Unable to process your request. Please try again.";
 
     header("Location: ../login.php");
     exit;
 }
 
-mysqli_stmt_bind_param($stmt, "s", $email);
+
+mysqli_stmt_bind_param(
+    $stmt,
+    "ss",
+    $identifier,
+    $identifier
+);
+
 
 mysqli_stmt_execute($stmt);
 
@@ -75,13 +113,23 @@ mysqli_stmt_close($stmt);
 
 /*
 |--------------------------------------------------------------------------
-| Check whether user exists
+| Account does not exist
 |--------------------------------------------------------------------------
 */
 
 if (!$user) {
 
-    $_SESSION['login_error'] = "Invalid email or password.";
+    /*
+    |--------------------------------------------------------------------------
+    | Generic message
+    |--------------------------------------------------------------------------
+    |
+    | We don't reveal whether an email/phone exists.
+    |
+    */
+
+    $_SESSION['login_error'] =
+        "Invalid phone number/email or password.";
 
     header("Location: ../login.php");
     exit;
@@ -90,7 +138,49 @@ if (!$user) {
 
 /*
 |--------------------------------------------------------------------------
-| Check account status
+| INACTIVE PARENT ACCOUNT
+|--------------------------------------------------------------------------
+|
+| A parent account may have been created by the class teacher
+| but not activated by the parent yet.
+|
+|--------------------------------------------------------------------------
+*/
+
+if (
+    $user['role'] === 'parent' &&
+    $user['status'] !== 'active'
+) {
+
+    /*
+    |--------------------------------------------------------------------------
+    | Store temporary information for activation page
+    |--------------------------------------------------------------------------
+    |
+    | We do NOT log the parent in.
+    |
+    */
+
+    $_SESSION['activation_user_id'] = $user['user_id'];
+
+    /*
+    |--------------------------------------------------------------------------
+    | Redirect to activation page
+    |--------------------------------------------------------------------------
+    */
+
+    header("Location: ../parent/activate.php");
+    exit;
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Other inactive accounts
+|--------------------------------------------------------------------------
+|
+| Admin/teacher/etc. should not be allowed to login while inactive.
+|
 |--------------------------------------------------------------------------
 */
 
@@ -106,13 +196,30 @@ if ($user['status'] !== 'active') {
 
 /*
 |--------------------------------------------------------------------------
+| Password is required for active accounts
+|--------------------------------------------------------------------------
+*/
+
+if ($password === '') {
+
+    $_SESSION['login_error'] =
+        "Please enter your password.";
+
+    header("Location: ../login.php");
+    exit;
+}
+
+
+/*
+|--------------------------------------------------------------------------
 | Verify password
 |--------------------------------------------------------------------------
 */
 
 if (!password_verify($password, $user['password'])) {
 
-    $_SESSION['login_error'] = "Invalid email or password.";
+    $_SESSION['login_error'] =
+        "Invalid phone number/email or password.";
 
     header("Location: ../login.php");
     exit;
@@ -123,9 +230,26 @@ if (!password_verify($password, $user['password'])) {
 |--------------------------------------------------------------------------
 | Regenerate session ID
 |--------------------------------------------------------------------------
+|
+| Prevents session fixation.
+|
+|--------------------------------------------------------------------------
 */
 
 session_regenerate_id(true);
+
+
+/*
+|--------------------------------------------------------------------------
+| Build full name
+|--------------------------------------------------------------------------
+*/
+
+$full_name = trim(
+    ($user['first_name'] ?? '') . ' ' .
+    ($user['middle_name'] ?? '') . ' ' .
+    ($user['last_name'] ?? '')
+);
 
 
 /*
@@ -134,14 +258,20 @@ session_regenerate_id(true);
 |--------------------------------------------------------------------------
 */
 
-$_SESSION['logged_in'] = true;
+$_SESSION['logged_in']  = true;
 
-$_SESSION['user_id'] = $user['user_id'];
-$_SESSION['full_name'] = $user['full_name'];
-$_SESSION['email'] = $user['email'];
-$_SESSION['role'] = $user['role'];
-$_SESSION['gender'] = $user['gender'];
-$_SESSION['phone'] = $user['phone'];
+$_SESSION['user_id']    = $user['user_id'];
+
+$_SESSION['full_name']  = $full_name;
+
+$_SESSION['email']      = $user['email'];
+
+$_SESSION['role']       = $user['role'];
+
+$_SESSION['gender']     = $user['gender'];
+
+$_SESSION['phone']      = $user['phone'];
+
 $_SESSION['profile_pic'] = $user['profile_pic'];
 
 
@@ -179,7 +309,12 @@ switch ($user['role']) {
 
     default:
 
-        // Remove authentication if role is invalid
+        /*
+        |--------------------------------------------------------------------------
+        | Invalid role
+        |--------------------------------------------------------------------------
+        */
+
         session_unset();
         session_destroy();
 

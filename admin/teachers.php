@@ -473,9 +473,14 @@ if ($class_table_check && mysqli_num_rows($class_table_check) > 0) {
             border: none;
             cursor: pointer;
             font-family: inherit;
+            white-space: nowrap;
         }
 
-        .add-button:hover { background: var(--navy-dark); transform: translateY(-1px); }
+        .add-button:hover {
+            background: var(--navy-dark);
+            transform: translateY(-1px);
+            color: var(--white);
+        }
         .add-button:active { transform: translateY(0); }
 
         .add-icon { color: var(--gold-light); font-size: 16px; }
@@ -629,7 +634,7 @@ if ($class_table_check && mysqli_num_rows($class_table_check) > 0) {
         table {
             width: 100%;
             border-collapse: collapse;
-            min-width: 1050px;
+            min-width: 950px;
         }
 
         thead { background: #fafaf8; }
@@ -697,7 +702,6 @@ if ($class_table_check && mysqli_num_rows($class_table_check) > 0) {
         }
 
         .email, .phone { color: var(--muted); }
-        .employee-number { color: var(--navy); font-weight: 650; }
         .qualification { color: var(--text); }
         .specialization { color: var(--text); font-weight: 600; }
 
@@ -780,7 +784,7 @@ if ($class_table_check && mysqli_num_rows($class_table_check) > 0) {
         .empty-state p { color: var(--muted); font-size: 11px; }
 
         /* =========================================================
-           TEACHER MODALS
+           MODALS
         ========================================================= */
         .modal-overlay {
             position: fixed;
@@ -1063,7 +1067,7 @@ if ($class_table_check && mysqli_num_rows($class_table_check) > 0) {
             }
             td[data-label="Teacher"]::before { display: none; }
 
-            /* Hide the "No." row on mobile — not useful */
+            /* Hide the "No." row on mobile */
             td[data-label="No."] {
                 display: none;
             }
@@ -1160,15 +1164,10 @@ include '../includes/topbar.php';
             <p>Manage teachers, teaching assignments and class responsibilities.</p>
         </div>
 
-        <button
-            type="button"
-            class="add-button"
-            data-action="add"
-            data-url="add_teacher.php"
-        >
+        <a href="add_teacher.php" class="add-button">
             <span class="add-icon">+</span>
             Add Teacher
-        </button>
+        </a>
     </div>
 
     <!-- STATISTICS -->
@@ -1208,7 +1207,7 @@ include '../includes/topbar.php';
                     type="text"
                     name="search"
                     class="filter-control"
-                    placeholder="Name, email, phone, employee no. or specialization..."
+                    placeholder="Name, email, phone or specialization..."
                     value="<?php echo e($search); ?>"
                 >
             </div>
@@ -1245,7 +1244,6 @@ include '../includes/topbar.php';
                         <tr>
                             <th>No.</th>
                             <th>Teacher</th>
-                            <th>Employee No.</th>
                             <th>Email</th>
                             <th>Phone</th>
                             <th>Qualification</th>
@@ -1305,11 +1303,6 @@ include '../includes/topbar.php';
                                 </div>
                             </td>
 
-                            <!-- EMPLOYEE NUMBER -->
-                            <td data-label="Employee No.">
-                                <span class="employee-number"><?php echo e($teacher['employee_no'] ?: '—'); ?></span>
-                            </td>
-
                             <!-- EMAIL -->
                             <td data-label="Email">
                                 <span class="email"><?php echo e($teacher['email'] ?: '—'); ?></span>
@@ -1352,12 +1345,10 @@ include '../includes/topbar.php';
                                         onclick="editTeacher(<?php echo $tid; ?>)"
                                     >Edit</button>
 
-                                    <button
-                                        type="button"
+                                    <a
                                         class="action-btn primary"
-                                        data-action="assign"
-                                        data-url="assign_teacher.php?id=<?php echo $tid; ?>"
-                                    >Assign</button>
+                                        href="assign_teacher.php?id=<?php echo $tid; ?>"
+                                    >Assign</a>
                                 </div>
                             </td>
 
@@ -1529,12 +1520,10 @@ if (sidebarOverlay) {
     sidebarOverlay.addEventListener('click', closeSidebar);
 }
 
-/* Escape closes sidebar */
 document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') closeSidebar();
 });
 
-/* Auto-close on resize to desktop */
 window.addEventListener('resize', function () {
     if (window.innerWidth > 800) closeSidebar();
 });
@@ -1671,21 +1660,6 @@ document.addEventListener('keydown', function (event) {
     }
 });
 
-/* =========================================================
-   ACTION BUTTON DELEGATION — ASSIGN ONLY
-   ========================================================= */
-document.addEventListener('click', function (event) {
-    const btn = event.target.closest('[data-action="assign"]');
-    if (!btn) return;
-
-    if (btn.dataset.busy === '1') return;
-    btn.dataset.busy = '1';
-    setTimeout(() => { btn.dataset.busy = '0'; }, 400);
-
-    const url = btn.dataset.url;
-    if (url) window.location.href = url;
-});
-
 
 /* Auto-hide success message */
 const flashMessage = document.getElementById('flashMessage');
@@ -1696,6 +1670,7 @@ if (flashMessage) {
         setTimeout(() => flashMessage.remove(), 350);
     }, 4000);
 }
+
 
 /* =========================================================
    KEYBOARD SHORTCUT — "/" focuses the search

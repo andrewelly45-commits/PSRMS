@@ -9,6 +9,7 @@
 |   - $conn (mysqli)
 |
 | Hides the "Attendance" link for anyone who is not a class teacher.
+| Adds "Add Student" link for class teachers only.
 |--------------------------------------------------------------------------
 */
 
@@ -22,9 +23,9 @@ if (!isset($conn)) {
 
 $sidebar_user_id = (int) ($_SESSION['user_id'] ?? 0);
 
-$sidebar_role = 'teacher';
-$sidebar_name = 'Teacher';
-$sidebar_emp  = '';
+$sidebar_role       = 'teacher';
+$sidebar_name       = 'Teacher';
+$sidebar_emp        = '';
 $sidebar_teacher_id = 0;
 $is_class_teacher   = false;
 
@@ -48,7 +49,6 @@ if (!function_exists('ts_table_exists')) {
    ========================================================================= */
 
 if ($sidebar_user_id > 0) {
-
     $stmt = mysqli_prepare(
         $conn,
         "SELECT
@@ -81,14 +81,10 @@ if ($sidebar_user_id > 0) {
 
 /* =========================================================================
    CHECK IF THE TEACHER IS A CLASS TEACHER
-   ---------------------------------------------------------------------------
-   If yes → show the Attendance link
-   If no  → hide it
    ========================================================================= */
 
 if ($sidebar_teacher_id > 0 && ts_table_exists($conn, 'class_teachers')) {
 
-    /* Get active academic year */
     $active_year_id = 0;
     if (ts_table_exists($conn, 'academic_years')) {
         $r = mysqli_query(
@@ -124,7 +120,6 @@ if ($sidebar_teacher_id > 0 && ts_table_exists($conn, 'class_teachers')) {
         mysqli_stmt_bind_param($stmt, $types, ...$params);
         mysqli_stmt_execute($stmt);
         mysqli_stmt_store_result($stmt);
-
         $is_class_teacher = (mysqli_stmt_num_rows($stmt) > 0);
         mysqli_stmt_close($stmt);
     }
@@ -282,6 +277,32 @@ $current_page = basename($_SERVER['PHP_SELF'] ?? '');
         stroke-linejoin: round;
     }
 
+    /* Small "add" pill inside nav */
+    .ts-nav a .ts-add-badge {
+        margin-left: auto;
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: .4px;
+        text-transform: uppercase;
+        background: var(--gold, #c9a227);
+        color: var(--navy, #17233c);
+        padding: 2px 7px;
+        border-radius: 20px;
+    }
+
+    /* Small "build" pill for admin-only tools */
+    .ts-nav a .ts-build-badge {
+        margin-left: auto;
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: .4px;
+        text-transform: uppercase;
+        background: rgba(255,255,255,.12);
+        color: var(--gold-light, #e2c65a);
+        padding: 2px 7px;
+        border-radius: 20px;
+    }
+
     /* Mobile */
     @media (max-width: 800px) {
         .teacher-sidebar {
@@ -340,29 +361,6 @@ $current_page = basename($_SERVER['PHP_SELF'] ?? '');
     </div>
 
 
-    <!-- USER -->
-    <div class="ts-user">
-        <div class="ts-avatar">
-            <?php
-            echo htmlspecialchars(
-                strtoupper(substr($sidebar_name ?: 'T', 0, 1)),
-                ENT_QUOTES,
-                'UTF-8'
-            );
-            ?>
-        </div>
-
-        <div class="ts-user-info">
-            <div class="ts-user-name">
-                <?php echo htmlspecialchars($sidebar_name, ENT_QUOTES, 'UTF-8'); ?>
-            </div>
-            <span class="ts-user-role <?php echo htmlspecialchars($sidebar_role, ENT_QUOTES, 'UTF-8'); ?>">
-                <?php echo htmlspecialchars($sidebar_role_label, ENT_QUOTES, 'UTF-8'); ?>
-            </span>
-        </div>
-    </div>
-
-
     <!-- NAV -->
     <nav class="ts-nav">
 
@@ -377,19 +375,8 @@ $current_page = basename($_SERVER['PHP_SELF'] ?? '');
             Dashboard
         </a>
 
-        <a href="profile.php" class="<?php echo $current_page === 'profile.php' ? 'active' : ''; ?>">
-            <svg class="ts-icon" viewBox="0 0 24 24">
-                <circle cx="12" cy="8" r="4"/>
-                <path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>
-            </svg>
-            My Profile
-        </a>
-
-
         <!-- TEACHING -->
         <?php if ($sidebar_role === 'teacher' || $sidebar_role === 'academic'): ?>
-            <div class="ts-nav-section">Teaching</div>
-
             <a href="my_classes.php" class="<?php echo $current_page === 'my_classes.php' ? 'active' : ''; ?>">
                 <svg class="ts-icon" viewBox="0 0 24 24">
                     <path d="M4 6h16v12H4z"/>
@@ -417,6 +404,16 @@ $current_page = basename($_SERVER['PHP_SELF'] ?? '');
             </a>
 
             <?php if ($is_class_teacher): ?>
+            <a href="add_student.php" class="<?php echo $current_page === 'add_student.php' ? 'active' : ''; ?>">
+                <svg class="ts-icon" viewBox="0 0 24 24">
+                    <circle cx="9" cy="8" r="3"/>
+                    <path d="M3 20c0-3 3-5 6-5s6 2 6 5"/>
+                    <path d="M19 8v6M16 11h6"/>
+                </svg>
+                Add Student
+                <span class="ts-add-badge">New</span>
+            </a>
+
             <a href="attendance.php" class="<?php echo $current_page === 'attendance.php' ? 'active' : ''; ?>">
                 <svg class="ts-icon" viewBox="0 0 24 24">
                     <rect x="4" y="5" width="16" height="16" rx="2"/>
@@ -439,7 +436,7 @@ $current_page = basename($_SERVER['PHP_SELF'] ?? '');
                     <rect x="3" y="5" width="18" height="16" rx="2"/>
                     <path d="M8 3v4M16 3v4M3 11h18"/>
                 </svg>
-                Timetable
+                My Timetable
             </a>
         <?php endif; ?>
 
@@ -447,6 +444,18 @@ $current_page = basename($_SERVER['PHP_SELF'] ?? '');
         <!-- ACADEMIC MASTER EXTRA -->
         <?php if ($sidebar_role === 'academic'): ?>
             <div class="ts-nav-section">Academic Master</div>
+
+            <!-- NEW: Timetable Builder for the whole school -->
+            <a href="manage_timetable.php"
+               class="<?php echo $current_page === 'manage_timetable.php' ? 'active' : ''; ?>">
+                <svg class="ts-icon" viewBox="0 0 24 24">
+                    <rect x="3" y="5" width="18" height="16" rx="2"/>
+                    <path d="M8 3v4M16 3v4M3 11h18"/>
+                    <path d="M8 15h3v3H8z"/>
+                </svg>
+                Timetable Builder
+                <span class="ts-build-badge">Admin</span>
+            </a>
 
             <a href="academic_overview.php" class="<?php echo $current_page === 'academic_overview.php' ? 'active' : ''; ?>">
                 <svg class="ts-icon" viewBox="0 0 24 24">
@@ -457,7 +466,7 @@ $current_page = basename($_SERVER['PHP_SELF'] ?? '');
                 Academic Overview
             </a>
 
-            <a href="exams.php" class="<?php echo $current_page === 'exams.php' ? 'active' : ''; ?>">
+            <a href="school_results.php" class="<?php echo $current_page === 'school_results' ? 'active' : ''; ?>">
                 <svg class="ts-icon" viewBox="0 0 24 24">
                     <path d="M6 3h9l3 3v15H6z"/>
                     <path d="M9 8h6M9 12h6M9 16h4"/>
@@ -546,7 +555,7 @@ window.toggleTeacherSidebar = function () {
 
     sidebar.classList.toggle('open');
     const isOpen = sidebar.classList.contains('open');
-    document.body.classList.toggle('sidebar-mobile-open', isOpen);
+    document.body.classList.classList.toggle('sidebar-mobile-open', isOpen);
     document.body.classList.toggle('no-scroll', isOpen);
 
     const overlay = document.getElementById('sidebarOverlay');

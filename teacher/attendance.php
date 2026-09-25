@@ -6,6 +6,8 @@ requireRole('teacher');
 
 require_once '../includes/db.php';
 
+
+
 $user_id = (int) ($_SESSION['user_id'] ?? 0);
 
 
@@ -283,6 +285,9 @@ $existing_attendance = [];
 
 if ($can_view && $view_class_id > 0) {
 
+    /* ---------------------------------------------------------------------
+       1) Fetch active students in this class
+    --------------------------------------------------------------------- */
     $stmt = mysqli_prepare(
         $conn,
         "SELECT student_id, admission_no, full_name, gender, photo, status
@@ -298,12 +303,16 @@ if ($can_view && $view_class_id > 0) {
     }
     mysqli_stmt_close($stmt);
 
+    /* ---------------------------------------------------------------------
+       2) Fetch existing attendance for the selected date
+    --------------------------------------------------------------------- */
     if (!empty($students)) {
-        $student_ids = array_column($students, 'student_id');
-        $placeholders = implode(',', array_fill(0, count($student_ids), '?'));
-        $types = str_repeat('i', count($student_ids)) . 's';
 
-        $params = $student_ids;
+        $student_ids  = array_column($students, 'student_id');
+        $placeholders = implode(',', array_fill(0, count($student_ids), '?'));
+        $types        = str_repeat('i', count($student_ids)) . 's';
+
+        $params   = $student_ids;
         $params[] = $view_date;
 
         $stmt = mysqli_prepare(
@@ -313,14 +322,13 @@ if ($can_view && $view_class_id > 0) {
              WHERE student_id IN ($placeholders)
                AND attendance_date = ?"
         );
+
         if ($stmt) {
             mysqli_stmt_bind_param($stmt, $types, ...$params);
             mysqli_stmt_execute($stmt);
-            $res = mysqli_stmt_get_result($res = $stmt ? $res = mysqli_stmt_get_result($stmt) : null);
-            /* ^ safe-guard: the above is just defensive; mysqli handles it */
-        }
-        if ($stmt) {
-            while ($row = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt))) {
+            $res = mysqli_stmt_get_result($stmt);
+
+            while ($row = mysqli_fetch_assoc($res)) {
                 $existing_attendance[(int)$row['student_id']] = $row;
             }
             mysqli_stmt_close($stmt);

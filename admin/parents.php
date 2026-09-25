@@ -1,5 +1,7 @@
 <?php
 
+session_start();
+
 require_once '../auth/auth_check.php';
 requireRole('admin');
 
@@ -7,6 +9,383 @@ require_once '../includes/db.php';
 
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
+
+
+/* =========================================================================
+   HELPERS
+   ========================================================================= */
+
+function e($v): string
+{
+    return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
+}
+
+function json_response(array $data): void
+{
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($data);
+    exit;
+}
+
+
+/* =========================================================================
+   AJAX ROUTER — must be at the very top, before any HTML output
+   ========================================================================= */
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['ajax_action'])) {
+
+    $ajax_action = $_POST['ajax_action'];
+
+    /* -------------------------------------------------------------
+       SAVE PARENT (create or update)
+    ------------------------------------------------------------- */
+    if ($ajax_action === 'save_parent') {
+
+        $parent_id   = (int) ($_POST['parent_id'] ?? 0);
+        $user_id     = (int) ($_POST['user_id']   ?? 0);
+
+        $first_name  = trim($_POST['first_name']  ?? '');
+        $middle_name = trim($_POST['middle_name'] ?? '');
+        $last_name   = trim($_POST['last_name']   ?? '');
+        $email       = trim($_POST['email']       ?? '');
+        $phone       = trim($_POST['phone']       ?? '');
+        $occupation  = trim($_POST['occupation']  ?? '');
+        $address     = trim($_POST['address']     ?? '');
+        $status      = $_POST['status']           ?? 'active';
+        $password    = $_POST['password']         ?? '';
+
+        $links_json = $_POST['links'] ?? '[]';
+        $links = json_decode($links_json, true);
+        if (!is_array($links)) $links = [];
+
+        $is_edit = ($parent_id > 0);
+        $errors  = [];
+
+        /* --- Validation --- */
+        if ($first_name === '') $errors['first_name'] = 'First name is required.';
+        if ($last_name  === '') $errors['last_name']  = 'Last name is required.';
+
+        if ($email === '') {
+            $errors['email'] = 'Email is required.';
+        } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $errors['email'] = 'Enter a valid email address.';
+        }
+
+        if ($phone === '') $errors['phone'] = 'Phone number is required.';
+
+        if (!in_array($status, ['active', 'inactive', 'suspended'], true)) {
+            $status = 'active';
+        }
+
+        if (!$is_edit && strlen($password) < 6) {
+            $errors['password'] = 'Password must be at least 6 characters.';
+        }
+        if ($is_edit && $password !== '' && strlen($password) < 6) {
+            $errors['password'] = 'Password must be at least 6 characters.';
+        }
+
+        /* Email uniqueness check */
+        if (empty($errors['email'])) {
+            $sql = "SELECT user_id FROM users WHERE email = ?";
+            if ($is_edit && $user_id > 0) {
+                $sql .= " AND user_id <> ?";
+                $stmt = mysqli_prepare($conn, $sql . " LIMIT 1");
+                if ($stmt) {
+                    mysqli_stmt_bind_param($stmt, 'si', $email, $user_id);
+                }
+            } else {
+                $stmt = mysqli_prepare($conn, $sql . " LIMIT 1");
+                if ($stmt) {
+                    mysqli_stmt_bind_param($stmt, 's', $email);
+                }
+            }
+            if ($stmt) {
+                mysqli_stmt_execute($stmt);
+                mysqli_stmt_store_result($stmt);
+                if (mysqli_stmt_num_rows($stmt) > 0) {
+                    $errors['email'] = 'This email is already registered.';
+                }
+                mysqli_stmt_close($stmt);
+            }
+        }
+
+        if (!empty($errors)) {
+            json_response([
+                'success' => false,
+                'message' => 'Please fix the highlighted fields.',
+                'errors'  => $errors,
+            ]);
+        }
+
+        /* --- Begin transaction --- */
+        mysqli_begin_transaction($conn);
+
+        try {
+            if (!$is_edit) {
+                /* ---- CREATE USER ---- */
+                $password_hash = password_hash($password, PASSWORD_DEFAULT);
+
+                $stmt = mysqli_prepare(
+                    $conn,
+                    "INSERT INTO users
+                        (first_name, middle_name, last_name, email, phone, password, role, status)
+                     VALUES (?, ?, ?, ?, ?, ?, 'parent', ?)"
+                );
+                if (!$stmt) throw new Exception('Could not prepare user insert: ' . mysqli_error($conn));
+
+                mysqli_stmt_bind_param(
+                    $stmt, 'sssssss',
+                    $first_name, $middle_name, $last_name,
+                    $email, $phone, $password_hash, $status
+                );
+                if (!mysqli_stmt_execute($stmt)) {
+                    throw new Exception('Could not create user: ' . mysqli_stmt_error($stmt));
+                }
+                $user_id = mysqli_insert_id($conn);
+                mysqli_stmt_close($stmt);
+
+                /* ---- CREATE PARENT ---- */
+                $stmt = mysqli_prepare(
+                    $conn,
+                    "INSERT INTO parents (user_id, occupation, address)
+                     VALUES (?, ?, ?)"
+                );
+                if (!$stmt) throw new Exception('Could not prepare parent insert: ' . mysqli_error($conn));
+
+                mysqli_stmt_bind_param($stmt, 'iss', $user_id, $occupation, $address);
+                if (!mysqli_stmt_execute($stmt)) {
+                    throw new Exception('Could not create parent: ' . mysqli_stmt_error($stmt));
+                }
+                $parent_id = mysqli_insert_id($conn);
+                mysqli_stmt_close($stmt);
+
+            } else {
+                /* ---- UPDATE USER ---- */
+                if ($password !== '') {
+                    $password_hash = password_hash($password, PASSWORD_DEFAULT);
+                    $stmt = mysqli_prepare(
+                        $conn,
+                        "UPDATE users
+                         SET first_name=?, middle_name=?, last_name=?,
+                             email=?, phone=?, password=?, status=?
+                         WHERE user_id=?"
+                    );
+                    if (!$stmt) throw new Exception('Could not prepare user update: ' . mysqli_error($conn));
+                    mysqli_stmt_bind_param(
+                        $stmt, 'sssssssi',
+                        $first_name, $middle_name, $last_name,
+                        $email, $phone, $password_hash, $status, $user_id
+                    );
+                } else {
+                    $stmt = mysqli_prepare(
+                        $conn,
+                        "UPDATE users
+                         SET first_name=?, middle_name=?, last_name=?,
+                             email=?, phone=?, status=?
+                         WHERE user_id=?"
+                    );
+                    if (!$stmt) throw new Exception('Could not prepare user update: ' . mysqli_error($conn));
+                    mysqli_stmt_bind_param(
+                        $stmt, 'ssssssi',
+                        $first_name, $middle_name, $last_name,
+                        $email, $phone, $status, $user_id
+                    );
+                }
+                if (!mysqli_stmt_execute($stmt)) {
+                    throw new Exception('Could not update user: ' . mysqli_stmt_error($stmt));
+                }
+                mysqli_stmt_close($stmt);
+
+                /* ---- UPDATE PARENT ---- */
+                $stmt = mysqli_prepare(
+                    $conn,
+                    "UPDATE parents SET occupation=?, address=? WHERE parent_id=?"
+                );
+                if (!$stmt) throw new Exception('Could not prepare parent update: ' . mysqli_error($conn));
+                mysqli_stmt_bind_param($stmt, 'ssi', $occupation, $address, $parent_id);
+                if (!mysqli_stmt_execute($stmt)) {
+                    throw new Exception('Could not update parent: ' . mysqli_stmt_error($stmt));
+                }
+                mysqli_stmt_close($stmt);
+
+                /* ---- CLEAR OLD LINKS ---- */
+                $stmt = mysqli_prepare($conn, "DELETE FROM parent_children WHERE parent_id = ?");
+                if ($stmt) {
+                    mysqli_stmt_bind_param($stmt, 'i', $parent_id);
+                    mysqli_stmt_execute($stmt);
+                    mysqli_stmt_close($stmt);
+                }
+            }
+
+            /* ---- INSERT LINKS (parent_children) ---- */
+            if (!empty($links)) {
+                $stmt = mysqli_prepare(
+                    $conn,
+                    "INSERT INTO parent_children
+                        (parent_id, student_id, relationship, is_primary_guardian)
+                     VALUES (?, ?, ?, ?)"
+                );
+                if (!$stmt) throw new Exception('Could not prepare link insert: ' . mysqli_error($conn));
+
+                foreach ($links as $link) {
+                    $sid  = (int) ($link['student_id'] ?? 0);
+                    $rel  = $link['relationship'] ?? 'Guardian';
+                    if (!in_array($rel, ['Father', 'Mother', 'Guardian', 'Other'], true)) {
+                        $rel = 'Guardian';
+                    }
+                    $prim = !empty($link['is_primary_guardian']) ? 1 : 0;
+
+                    if ($sid <= 0) continue;
+
+                    mysqli_stmt_bind_param($stmt, 'iisi', $parent_id, $sid, $rel, $prim);
+                    if (!mysqli_stmt_execute($stmt)) {
+                        throw new Exception('Could not save link: ' . mysqli_stmt_error($stmt));
+                    }
+                }
+                mysqli_stmt_close($stmt);
+            }
+
+            mysqli_commit($conn);
+
+            /* ---- Fetch the saved parent for the JSON response ---- */
+            $stmt = mysqli_prepare(
+                $conn,
+                "SELECT
+                    p.parent_id, p.user_id, p.occupation, p.address, p.created_at,
+                    u.first_name, u.middle_name, u.last_name,
+                    u.email, u.phone, u.status, u.profile_pic
+                 FROM parents p
+                 INNER JOIN users u ON u.user_id = p.user_id
+                 WHERE p.parent_id = ? LIMIT 1"
+            );
+            $parent = null;
+            if ($stmt) {
+                mysqli_stmt_bind_param($stmt, 'i', $parent_id);
+                mysqli_stmt_execute($stmt);
+                $r = mysqli_stmt_get_result($stmt);
+                $parent = mysqli_fetch_assoc($r);
+                mysqli_stmt_close($stmt);
+            }
+
+            /* ---- Fetch links for this parent ---- */
+            if ($parent) {
+                $parent['links'] = [];
+                $stmt = mysqli_prepare(
+                    $conn,
+                    "SELECT
+                        sp.id, sp.parent_id, sp.student_id,
+                        sp.relationship, sp.is_primary_guardian,
+                        s.full_name AS student_name,
+                        s.registration_no
+                     FROM parent_children sp
+                     INNER JOIN students s ON s.student_id = sp.student_id
+                     WHERE sp.parent_id = ?
+                     ORDER BY sp.is_primary_guardian DESC, s.full_name ASC"
+                );
+                if ($stmt) {
+                    mysqli_stmt_bind_param($stmt, 'i', $parent_id);
+                    mysqli_stmt_execute($stmt);
+                    $r = mysqli_stmt_get_result($stmt);
+                    while ($row = mysqli_fetch_assoc($r)) {
+                        $parent['links'][] = $row;
+                    }
+                    mysqli_stmt_close($stmt);
+                }
+            }
+
+            json_response([
+                'success' => true,
+                'message' => $is_edit ? 'Parent updated successfully.' : 'Parent created successfully.',
+                'parent'  => $parent,
+            ]);
+
+        } catch (Throwable $ex) {
+            mysqli_rollback($conn);
+            json_response([
+                'success' => false,
+                'message' => 'Could not save parent: ' . $ex->getMessage(),
+            ]);
+        }
+    }
+
+    /* -------------------------------------------------------------
+       DELETE PARENT
+    ------------------------------------------------------------- */
+    if ($ajax_action === 'delete_parent') {
+
+        $parent_id = (int) ($_POST['parent_id'] ?? 0);
+
+        if ($parent_id <= 0) {
+            json_response(['success' => false, 'message' => 'Invalid parent.']);
+        }
+
+        /* Fetch user_id so we can delete it too */
+        $user_id = 0;
+        $stmt = mysqli_prepare($conn, "SELECT user_id FROM parents WHERE parent_id = ? LIMIT 1");
+        if ($stmt) {
+            mysqli_stmt_bind_param($stmt, 'i', $parent_id);
+            mysqli_stmt_execute($stmt);
+            $r = mysqli_stmt_get_result($stmt);
+            $row = mysqli_fetch_assoc($r);
+            $user_id = (int) ($row['user_id'] ?? 0);
+            mysqli_stmt_close($stmt);
+        }
+
+        mysqli_begin_transaction($conn);
+
+        try {
+            /* 1. Delete links */
+            $stmt = mysqli_prepare($conn, "DELETE FROM parent_children WHERE parent_id = ?");
+            if ($stmt) {
+                mysqli_stmt_bind_param($stmt, 'i', $parent_id);
+                mysqli_stmt_execute($stmt);
+                mysqli_stmt_close($stmt);
+            }
+
+            /* 2. Delete parent row */
+            $stmt = mysqli_prepare($conn, "DELETE FROM parents WHERE parent_id = ?");
+            if ($stmt) {
+                mysqli_stmt_bind_param($stmt, 'i', $parent_id);
+                mysqli_stmt_execute($stmt);
+                mysqli_stmt_close($stmt);
+            }
+
+            /* 3. Delete user account */
+            if ($user_id > 0) {
+                $stmt = mysqli_prepare($conn, "DELETE FROM users WHERE user_id = ?");
+                if ($stmt) {
+                    mysqli_stmt_bind_param($stmt, 'i', $user_id);
+                    mysqli_stmt_execute($stmt);
+                    mysqli_stmt_close($stmt);
+                }
+            }
+
+            mysqli_commit($conn);
+
+            json_response([
+                'success' => true,
+                'message' => 'Parent deleted successfully.',
+            ]);
+
+        } catch (Throwable $ex) {
+            mysqli_rollback($conn);
+            json_response([
+                'success' => false,
+                'message' => 'Could not delete parent: ' . $ex->getMessage(),
+            ]);
+        }
+    }
+
+    /* -------------------------------------------------------------
+       UNKNOWN AJAX ACTION
+    ------------------------------------------------------------- */
+    json_response(['success' => false, 'message' => 'Unknown action.']);
+}
+
+
+/* =========================================================================
+   NORMAL PAGE LOAD — render HTML
+   ========================================================================= */
 
 /*
 |--------------------------------------------------------------------------
@@ -107,7 +486,7 @@ if ($stmt) {
 
 /*
 |--------------------------------------------------------------------------
-| Attach linked students to each parent
+| Attach linked students to each parent (table: parent_children)
 |--------------------------------------------------------------------------
 */
 
@@ -126,8 +505,8 @@ if (!empty($parent_ids)) {
             sp.relationship,
             sp.is_primary_guardian,
             s.full_name AS student_name,
-            s.registration_no
-        FROM student_parents sp
+            s.admission_no
+        FROM parent_children sp
         INNER JOIN students s ON s.student_id = sp.student_id
         WHERE sp.parent_id IN ($placeholders)
         ORDER BY sp.is_primary_guardian DESC, s.full_name ASC
@@ -225,9 +604,6 @@ $has_filters = ($search !== '' || $status !== '');
 
         body.no-scroll { overflow: hidden; }
 
-        /* =========================================================
-           MOBILE TOPBAR
-        ========================================================= */
         .mobile-topbar {
             display: none;
             position: fixed;
@@ -283,9 +659,6 @@ $has_filters = ($search !== '' || $status !== '');
 
         .sidebar-overlay.open { display: block; opacity: 1; }
 
-        /* =================================================
-           MAIN CONTENT
-        ================================================= */
         .main-content {
             margin-left: var(--sidebar-w);
             padding: calc(var(--topbar-h) + 30px) 30px 40px;
@@ -299,9 +672,6 @@ $has_filters = ($search !== '' || $status !== '');
             }
         }
 
-        /* =================================================
-           PAGE HEADER
-        ================================================= */
         .page-header {
             display: flex;
             justify-content: space-between;
@@ -353,9 +723,6 @@ $has_filters = ($search !== '' || $status !== '');
             line-height: 1;
         }
 
-        /* =================================================
-           STATISTICS
-        ================================================= */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
@@ -401,9 +768,6 @@ $has_filters = ($search !== '' || $status !== '');
             margin-top: 12px;
         }
 
-        /* =================================================
-           FILTER PANEL
-        ================================================= */
         .filter-panel {
             background: var(--white);
             border: 1px solid var(--border);
@@ -528,9 +892,6 @@ $has_filters = ($search !== '' || $status !== '');
             border-color: #c8ccd3;
         }
 
-        /* =================================================
-           RESULTS BAR
-        ================================================= */
         .results-bar {
             display: flex;
             align-items: center;
@@ -550,9 +911,6 @@ $has_filters = ($search !== '' || $status !== '');
             font-size: 11.5px;
         }
 
-        /* =================================================
-           TABLE
-        ================================================= */
         .table-panel {
             background: var(--white);
             border: 1px solid var(--border);
@@ -597,9 +955,6 @@ $has_filters = ($search !== '' || $status !== '');
         tbody tr:hover { background: #fdfcf8; }
         tbody tr:last-child td { border-bottom: none; }
 
-        /* =================================================
-           PARENT CELL
-        ================================================= */
         .parent-cell {
             display: flex;
             align-items: center;
@@ -644,9 +999,6 @@ $has_filters = ($search !== '' || $status !== '');
         .phone { color: var(--muted); }
         .occupation { color: var(--text); font-weight: 600; }
 
-        /* =================================================
-           LINKED STUDENTS CHIPS
-        ================================================= */
         .student-chips {
             display: flex;
             flex-wrap: wrap;
@@ -686,9 +1038,6 @@ $has_filters = ($search !== '' || $status !== '');
             font-style: italic;
         }
 
-        /* =================================================
-           STATUS
-        ================================================= */
         .status {
             display: inline-flex;
             align-items: center;
@@ -716,9 +1065,6 @@ $has_filters = ($search !== '' || $status !== '');
         .status-suspended  { color: var(--red);    background: #faf0f0; }
         .status-suspended::before { background: var(--red); }
 
-        /* =================================================
-           ACTIONS
-        ================================================= */
         .actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
         .action-btn {
@@ -758,9 +1104,6 @@ $has_filters = ($search !== '' || $status !== '');
             color: var(--red);
         }
 
-        /* =================================================
-           MOBILE CARD LIST
-        ================================================= */
         .card-list { display: none; }
 
         .parent-card {
@@ -828,9 +1171,6 @@ $has_filters = ($search !== '' || $status !== '');
             justify-content: center;
         }
 
-        /* =================================================
-           EMPTY STATE
-        ================================================= */
         .empty-state {
             padding: 55px 20px;
             text-align: center;
@@ -861,9 +1201,6 @@ $has_filters = ($search !== '' || $status !== '');
             font-size: 12px;
         }
 
-        /* =================================================
-           MODAL
-        ================================================= */
         .modal-backdrop {
             position: fixed;
             inset: 0;
@@ -871,11 +1208,9 @@ $has_filters = ($search !== '' || $status !== '');
             background: rgba(16, 24, 43, .55);
             backdrop-filter: blur(3px);
             -webkit-backdrop-filter: blur(3px);
-
             display: none;
             align-items: center;
             justify-content: center;
-
             padding: 20px;
             opacity: 0;
             transition: opacity .2s ease;
@@ -887,12 +1222,10 @@ $has_filters = ($search !== '' || $status !== '');
             background: var(--white);
             border-radius: 14px;
             box-shadow: 0 20px 60px rgba(16, 24, 43, .35);
-
             width: 100%;
             max-width: 720px;
             max-height: 92vh;
             overflow-y: auto;
-
             transform: scale(.96);
             transition: transform .2s ease;
         }
@@ -952,9 +1285,6 @@ $has_filters = ($search !== '' || $status !== '');
             border-radius: 0 0 14px 14px;
         }
 
-        /* =================================================
-           FORM
-        ================================================= */
         .form-section {
             margin-bottom: 22px;
             padding-bottom: 22px;
@@ -1061,9 +1391,6 @@ $has_filters = ($search !== '' || $status !== '');
 
         .field-error.show { display: block; }
 
-        /* =================================================
-           STUDENT LINKS (dynamic rows)
-        ================================================= */
         .link-list {
             display: flex;
             flex-direction: column;
@@ -1174,9 +1501,6 @@ $has_filters = ($search !== '' || $status !== '');
             font-style: italic;
         }
 
-        /* =================================================
-           BUTTONS
-        ================================================= */
         .btn {
             display: inline-flex;
             align-items: center;
@@ -1224,9 +1548,6 @@ $has_filters = ($search !== '' || $status !== '');
 
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* =================================================
-           DELETE CONFIRM
-        ================================================= */
         .confirm-icon {
             width: 56px;
             height: 56px;
@@ -1257,9 +1578,6 @@ $has_filters = ($search !== '' || $status !== '');
 
         .confirm-text strong { color: var(--navy); font-weight: 700; }
 
-        /* =================================================
-           TOASTS
-        ================================================= */
         .toast-wrap {
             position: fixed;
             top: 20px;
@@ -1298,9 +1616,6 @@ $has_filters = ($search !== '' || $status !== '');
             to   { transform: translateX(0);    opacity: 1; }
         }
 
-        /* =================================================
-           RESPONSIVE
-        ================================================= */
         @media (max-width: 900px) {
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
             .filter-form { grid-template-columns: 1fr 1fr; }
@@ -1532,7 +1847,6 @@ $has_filters = ($search !== '' || $status !== '');
 </head>
 <body>
 
-<!-- MOBILE TOPBAR -->
 <div class="mobile-topbar">
     <div class="brand">PSRMS <span>Admin</span></div>
     <button type="button" class="hamburger" id="hamburgerBtn" aria-label="Menu">
@@ -1625,7 +1939,6 @@ include '../includes/topbar.php';
 
         <?php if (!empty($parents)): ?>
 
-            <!-- DESKTOP TABLE -->
             <div class="table-wrapper">
                 <table>
                     <thead>
@@ -1733,7 +2046,6 @@ include '../includes/topbar.php';
                 </table>
             </div>
 
-            <!-- MOBILE CARDS -->
             <div class="card-list" id="parentsCardList">
                 <?php foreach ($parents as $parent):
                     $full_name = trim(
@@ -1878,7 +2190,6 @@ include '../includes/topbar.php';
 
             <div class="modal-body">
 
-                <!-- SECTION: PERSONAL INFO -->
                 <div class="form-section">
                     <div class="form-section-title">Personal Information</div>
                     <div class="form-grid">
@@ -1914,7 +2225,6 @@ include '../includes/topbar.php';
                     </div>
                 </div>
 
-                <!-- SECTION: CONTACT -->
                 <div class="form-section">
                     <div class="form-section-title">Contact &amp; Account</div>
                     <div class="form-grid">
@@ -1952,13 +2262,10 @@ include '../includes/topbar.php';
                     </div>
                 </div>
 
-                <!-- SECTION: LINKED STUDENTS -->
                 <div class="form-section">
                     <div class="form-section-title">Linked Students</div>
 
-                    <div class="link-list" id="linkList">
-                        <!-- dynamic rows injected here -->
-                    </div>
+                    <div class="link-list" id="linkList"></div>
 
                     <div class="no-links-hint" id="noLinksHint">No students linked yet.</div>
 
@@ -2007,9 +2314,6 @@ include '../includes/topbar.php';
 
 <div class="toast-wrap" id="toastWrap"></div>
 
-<!-- =========================================================
-     STUDENTS DATA (JSON) — used by the link rows
-========================================================= -->
 <script>
     window.ALL_STUDENTS = <?php
         echo json_encode(array_map(function ($s) {
@@ -2338,7 +2642,7 @@ document.addEventListener('click', e => {
 });
 
 /* =========================================================
-   SAVE
+   SAVE (POST to parents.php with ajax_action=save_parent)
 ========================================================= */
 saveBtn.addEventListener('click', e => e.preventDefault());
 
@@ -2382,19 +2686,27 @@ parentForm.addEventListener('submit', async e => {
     const links = collectLinks();
 
     const fd = new FormData(parentForm);
+    fd.set('ajax_action', 'save_parent');
     fd.set('links', JSON.stringify(links));
 
     saveBtn.classList.add('loading');
     saveBtn.disabled = true;
 
     try {
-        const res = await fetch('save_parent.php', {
+        const res = await fetch('parents.php', {
             method: 'POST',
             body: fd,
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
 
-        const json = await res.json();
+        const rawText = await res.text();
+        let json;
+        try {
+            json = JSON.parse(rawText);
+        } catch (err) {
+            console.error(rawText);
+            throw new Error('Server returned an unexpected response. Check the PHP error log.');
+        }
 
         if (!json.success) {
             if (json.errors) showErrors(json.errors);
@@ -2413,7 +2725,7 @@ parentForm.addEventListener('submit', async e => {
 
     } catch (err) {
         console.error(err);
-        showToast('Network error. Please try again.', 'error');
+        showToast(err.message || 'Network error. Please try again.', 'error');
     } finally {
         saveBtn.classList.remove('loading');
         saveBtn.disabled = false;
@@ -2421,7 +2733,7 @@ parentForm.addEventListener('submit', async e => {
 });
 
 /* =========================================================
-   DELETE
+   DELETE (POST to parents.php with ajax_action=delete_parent)
 ========================================================= */
 let parentToDelete = null;
 
@@ -2444,19 +2756,27 @@ confirmDeleteBtn.addEventListener('click', async () => {
     if (!parentToDelete) return;
 
     const fd = new FormData();
+    fd.append('ajax_action', 'delete_parent');
     fd.append('parent_id', parentToDelete.id);
 
     confirmDeleteBtn.classList.add('loading');
     confirmDeleteBtn.disabled = true;
 
     try {
-        const res = await fetch('delete_parent.php', {
+        const res = await fetch('parents.php', {
             method: 'POST',
             body: fd,
             headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
 
-        const json = await res.json();
+        const rawText = await res.text();
+        let json;
+        try {
+            json = JSON.parse(rawText);
+        } catch (err) {
+            console.error(rawText);
+            throw new Error('Server returned an unexpected response.');
+        }
 
         if (!json.success) {
             showToast(json.message || 'Could not delete parent.', 'error');
@@ -2472,7 +2792,7 @@ confirmDeleteBtn.addEventListener('click', async () => {
 
     } catch (err) {
         console.error(err);
-        showToast('Network error. Please try again.', 'error');
+        showToast(err.message || 'Network error. Please try again.', 'error');
     } finally {
         confirmDeleteBtn.classList.remove('loading');
         confirmDeleteBtn.disabled = false;

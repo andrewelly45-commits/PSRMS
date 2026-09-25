@@ -23,6 +23,84 @@ function e($v): string
     return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8');
 }
 
+function tableExists(mysqli $conn, string $t): bool
+{
+    $safe = mysqli_real_escape_string($conn, $t);
+    $r = mysqli_query($conn, "SHOW TABLES LIKE '$safe'");
+    return $r && mysqli_num_rows($r) > 0;
+}
+
+const DEFAULT_TERMS = ['Term 1', 'Term 2', 'Term 3'];
+
+/**
+ * Ensure the 3 default terms exist for a given academic year.
+ */
+function ensure_terms_for_year(mysqli $conn, int $academic_year_id): int
+{
+    if ($academic_year_id <= 0) return 0;
+
+    $existing = [];
+    $stmt = mysqli_prepare($conn, "SELECT term_name FROM terms WHERE academic_year_id = ?");
+    mysqli_stmt_bind_param($stmt, 'i', $academic_year_id);
+    mysqli_stmt_execute($stmt);
+    $res = mysqli_stmt_get_result($stmt);
+    while ($row = mysqli_fetch_assoc($res)) {
+        $existing[$row['term_name']] = true;
+    }
+    mysqli_stmt_close($stmt);
+
+    $inserted = 0;
+    $stmt = mysqli_prepare(
+        $conn,
+        "INSERT INTO terms (academic_year_id, term_name, status) VALUES (?, ?, 'closed')"
+    );
+    foreach (DEFAULT_TERMS as $t) {
+        if (isset($existing[$t])) continue;
+        mysqli_stmt_bind_param($stmt, 'is', $academic_year_id, $t);
+        if (mysqli_stmt_execute($stmt)) $inserted++;
+    }
+    mysqli_stmt_close($stmt);
+
+    return $inserted;
+}
+
+
+/* =========================================================================
+   AUTO-CREATE academic_years + terms TABLES (defensive)
+   ========================================================================= */
+
+if (!tableExists($conn, 'academic_years')) {
+    mysqli_query(
+        $conn,
+        "CREATE TABLE IF NOT EXISTS academic_years (
+            academic_year_id INT(11) NOT NULL AUTO_INCREMENT,
+            year             INT(4) NOT NULL,
+            status           ENUM('active','closed') DEFAULT 'active',
+            created_at       TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (academic_year_id),
+            UNIQUE KEY uniq_year (year)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+}
+
+if (!tableExists($conn, 'terms')) {
+    mysqli_query(
+        $conn,
+        "CREATE TABLE IF NOT EXISTS terms (
+            term_id          INT(11) NOT NULL AUTO_INCREMENT,
+            academic_year_id INT(11) NOT NULL,
+            term_name        ENUM('Term 1','Term 2','Term 3') NOT NULL,
+            start_date       DATE DEFAULT NULL,
+            end_date         DATE DEFAULT NULL,
+            status           ENUM('active','closed') DEFAULT 'active',
+            PRIMARY KEY (term_id),
+            UNIQUE KEY uniq_year_term (academic_year_id, term_name),
+            KEY idx_year (academic_year_id),
+            KEY idx_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+}
+
 
 /* =========================================================================
    HANDLE POST
@@ -33,7 +111,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
     /* -------------------------------------------------------------
-       CREATE
+       CREATE ACADEMIC YEAR (+ auto-insert its 3 terms)
     ------------------------------------------------------------- */
     if ($action === 'create') {
 
@@ -46,17 +124,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errors[] = 'Year must be a valid 4-digit number.';
         } else {
             $year = (int) $year;
-
             if ($year < 2000 || $year > 2100) {
                 $errors[] = 'Year must be between 2000 and 2100.';
             }
         }
 
-        if (!in_array($status, ['active', 'closed'], true)) {
-            $status = 'active';
-        }
+        if (!in_array($status, ['active', 'closed'], true)) $status = 'active';
 
-        /* Duplicate check */
         if (empty($errors)) {
             $stmt = mysqli_prepare(
                 $conn,
@@ -65,7 +139,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             mysqli_stmt_bind_param($stmt, 'i', $year);
             mysqli_stmt_execute($stmt);
             mysqli_stmt_store_result($stmt);
-
             if (mysqli_stmt_num_rows($stmt) > 0) {
                 $errors[] = 'This academic year already exists.';
             }
@@ -78,30 +151,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        /* If we're activating this year, close any other active year */
-        if ($status === 'active') {
-            mysqli_query($conn, "UPDATE academic_years SET status = 'closed' WHERE status = 'active'");
-        }
+        mysqli_begin_transaction($conn);
 
-        $stmt = mysqli_prepare(
-            $conn,
-            "INSERT INTO academic_years (year, status) VALUES (?, ?)"
-        );
-        mysqli_stmt_bind_param($stmt, 'is', $year, $status);
+        try {
+            if ($status === 'active') {
+                mysqli_query($conn, "UPDATE academic_years SET status = 'closed' WHERE status = 'active'");
+            }
 
-        if (mysqli_stmt_execute($stmt)) {
+            $stmt = mysqli_prepare(
+                $conn,
+                "INSERT INTO academic_years (year, status) VALUES (?, ?)"
+            );
+            mysqli_stmt_bind_param($stmt, 'is', $year, $status);
+            mysqli_stmt_execute($stmt);
+            $new_id = (int) mysqli_insert_id($conn);
             mysqli_stmt_close($stmt);
-            redirect_with_flash('success', "Academic year {$year} created.");
-        }
 
-        $err = mysqli_stmt_error($stmt);
-        mysqli_stmt_close($stmt);
-        redirect_with_flash('error', 'Could not create year: ' . $err);
+            $inserted_terms = ensure_terms_for_year($conn, $new_id);
+
+            mysqli_commit($conn);
+
+            redirect_with_flash(
+                'success',
+                "Academic year {$year} created with {$inserted_terms} default terms."
+            );
+        } catch (Throwable $ex) {
+            mysqli_rollback($conn);
+            redirect_with_flash('error', 'Could not create year: ' . $ex->getMessage());
+        }
     }
 
 
     /* -------------------------------------------------------------
-       UPDATE
+       UPDATE ACADEMIC YEAR
     ------------------------------------------------------------- */
     if ($action === 'update') {
 
@@ -122,11 +204,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        if (!in_array($status, ['active', 'closed'], true)) {
-            $status = 'active';
-        }
+        if (!in_array($status, ['active', 'closed'], true)) $status = 'active';
 
-        /* Duplicate check */
         if (empty($errors)) {
             $stmt = mysqli_prepare(
                 $conn,
@@ -136,7 +215,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             mysqli_stmt_bind_param($stmt, 'ii', $year, $id);
             mysqli_stmt_execute($stmt);
             mysqli_stmt_store_result($stmt);
-
             if (mysqli_stmt_num_rows($stmt) > 0) {
                 $errors[] = 'Another academic year already uses this number.';
             }
@@ -149,45 +227,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        /* Activating this one closes all others */
-        if ($status === 'active') {
+        mysqli_begin_transaction($conn);
+
+        try {
+            if ($status === 'active') {
+                $stmt = mysqli_prepare(
+                    $conn,
+                    "UPDATE academic_years SET status = 'closed'
+                     WHERE status = 'active' AND academic_year_id <> ?"
+                );
+                mysqli_stmt_bind_param($stmt, 'i', $id);
+                mysqli_stmt_execute($stmt);
+                mysqli_stmt_close($stmt);
+            }
+
             $stmt = mysqli_prepare(
                 $conn,
-                "UPDATE academic_years SET status = 'closed'
-                 WHERE status = 'active' AND academic_year_id <> ?"
+                "UPDATE academic_years SET year = ?, status = ? WHERE academic_year_id = ?"
             );
-            mysqli_stmt_bind_param($stmt, 'i', $id);
+            mysqli_stmt_bind_param($stmt, 'isi', $year, $status, $id);
             mysqli_stmt_execute($stmt);
             mysqli_stmt_close($stmt);
-        }
 
-        $stmt = mysqli_prepare(
-            $conn,
-            "UPDATE academic_years SET year = ?, status = ? WHERE academic_year_id = ?"
-        );
-        mysqli_stmt_bind_param($stmt, 'isi', $year, $status, $id);
+            ensure_terms_for_year($conn, $id);
 
-        if (mysqli_stmt_execute($stmt)) {
-            mysqli_stmt_close($stmt);
+            mysqli_commit($conn);
             redirect_with_flash('success', "Academic year {$year} updated.");
+        } catch (Throwable $ex) {
+            mysqli_rollback($conn);
+            redirect_with_flash('error', 'Could not update year: ' . $ex->getMessage());
         }
-
-        $err = mysqli_stmt_error($stmt);
-        mysqli_stmt_close($stmt);
-        redirect_with_flash('error', 'Could not update year: ' . $err);
     }
 
 
     /* -------------------------------------------------------------
-       ACTIVATE
+       ACTIVATE ACADEMIC YEAR
     ------------------------------------------------------------- */
     if ($action === 'activate') {
 
         $id = (int) ($_POST['academic_year_id'] ?? 0);
-
-        if ($id <= 0) {
-            redirect_with_flash('error', 'Invalid year.');
-        }
+        if ($id <= 0) redirect_with_flash('error', 'Invalid year.');
 
         mysqli_query($conn, "UPDATE academic_years SET status = 'closed' WHERE status = 'active'");
 
@@ -201,6 +280,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         mysqli_stmt_close($stmt);
 
         if ($affected > 0) {
+            ensure_terms_for_year($conn, $id);
             redirect_with_flash('success', 'Academic year set as active.');
         }
         redirect_with_flash('error', 'Could not activate year.');
@@ -208,82 +288,172 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 
     /* -------------------------------------------------------------
-       CLOSE
+       CLOSE ACADEMIC YEAR (also closes its terms)
     ------------------------------------------------------------- */
     if ($action === 'close') {
 
         $id = (int) ($_POST['academic_year_id'] ?? 0);
+        if ($id <= 0) redirect_with_flash('error', 'Invalid year.');
 
-        if ($id <= 0) {
-            redirect_with_flash('error', 'Invalid year.');
+        mysqli_begin_transaction($conn);
+        try {
+            $stmt = mysqli_prepare($conn, "UPDATE academic_years SET status = 'closed' WHERE academic_year_id = ?");
+            mysqli_stmt_bind_param($stmt, 'i', $id);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_close($stmt);
+
+            $stmt = mysqli_prepare($conn, "UPDATE terms SET status = 'closed' WHERE academic_year_id = ?");
+            mysqli_stmt_bind_param($stmt, 'i', $id);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_close($stmt);
+
+            mysqli_commit($conn);
+            redirect_with_flash('success', 'Academic year and its terms closed.');
+        } catch (Throwable $ex) {
+            mysqli_rollback($conn);
+            redirect_with_flash('error', 'Could not close year.');
         }
-
-        $stmt = mysqli_prepare(
-            $conn,
-            "UPDATE academic_years SET status = 'closed' WHERE academic_year_id = ?"
-        );
-        mysqli_stmt_bind_param($stmt, 'i', $id);
-        mysqli_stmt_execute($stmt);
-        mysqli_stmt_close($stmt);
-
-        redirect_with_flash('success', 'Academic year closed.');
     }
 
 
     /* -------------------------------------------------------------
-       DELETE
+       DELETE ACADEMIC YEAR (+ its terms)
     ------------------------------------------------------------- */
     if ($action === 'delete') {
 
         $id = (int) ($_POST['academic_year_id'] ?? 0);
+        if ($id <= 0) redirect_with_flash('error', 'Invalid year.');
 
-        if ($id <= 0) {
-            redirect_with_flash('error', 'Invalid year.');
-        }
-
-        /* Block deleting an active year */
-        $stmt = mysqli_prepare(
-            $conn,
-            "SELECT status FROM academic_years WHERE academic_year_id = ? LIMIT 1"
-        );
+        $stmt = mysqli_prepare($conn, "SELECT status FROM academic_years WHERE academic_year_id = ? LIMIT 1");
         mysqli_stmt_bind_param($stmt, 'i', $id);
         mysqli_stmt_execute($stmt);
         $row = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
         mysqli_stmt_close($stmt);
 
-        if (!$row) {
-            redirect_with_flash('error', 'Year not found.');
-        }
-
+        if (!$row) redirect_with_flash('error', 'Year not found.');
         if ($row['status'] === 'active') {
             redirect_with_flash('error', 'Cannot delete the active academic year. Close it first.');
         }
 
-        /* Block deleting if assignments exist */
-        $has_assignments = false;
-        $tbl = mysqli_query($conn, "SHOW TABLES LIKE 'teacher_assignments'");
-        if ($tbl && mysqli_num_rows($tbl) > 0) {
-            $stmt = mysqli_prepare(
-                $conn,
-                "SELECT COUNT(*) AS c FROM teacher_assignments WHERE academic_year_id = ?"
-            );
+        if (tableExists($conn, 'teacher_assignments')) {
+            $stmt = mysqli_prepare($conn, "SELECT COUNT(*) AS c FROM teacher_assignments WHERE academic_year_id = ?");
             mysqli_stmt_bind_param($stmt, 'i', $id);
             mysqli_stmt_execute($stmt);
             $r = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
             mysqli_stmt_close($stmt);
-            $has_assignments = ((int)($r['c'] ?? 0) > 0);
+            if ((int)($r['c'] ?? 0) > 0) {
+                redirect_with_flash('error', 'Cannot delete — teacher assignments are linked to this year.');
+            }
         }
 
-        if ($has_assignments) {
-            redirect_with_flash('error', 'Cannot delete — there are teacher assignments linked to this year.');
+        if (tableExists($conn, 'results')) {
+            $stmt = mysqli_prepare($conn, "SELECT COUNT(*) AS c FROM results WHERE academic_year_id = ?");
+            mysqli_stmt_bind_param($stmt, 'i', $id);
+            mysqli_stmt_execute($stmt);
+            $r = mysqli_fetch_assoc(mysqli_stmt_get_result($stmt));
+            mysqli_stmt_close($stmt);
+            if ((int)($r['c'] ?? 0) > 0) {
+                redirect_with_flash('error', 'Cannot delete — results are linked to this year.');
+            }
         }
 
-        $stmt = mysqli_prepare($conn, "DELETE FROM academic_years WHERE academic_year_id = ?");
-        mysqli_stmt_bind_param($stmt, 'i', $id);
-        mysqli_stmt_execute($stmt);
-        mysqli_stmt_close($stmt);
+        mysqli_begin_transaction($conn);
+        try {
+            $stmt = mysqli_prepare($conn, "DELETE FROM terms WHERE academic_year_id = ?");
+            mysqli_stmt_bind_param($stmt, 'i', $id);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_close($stmt);
 
-        redirect_with_flash('success', 'Academic year deleted.');
+            $stmt = mysqli_prepare($conn, "DELETE FROM academic_years WHERE academic_year_id = ?");
+            mysqli_stmt_bind_param($stmt, 'i', $id);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_close($stmt);
+
+            mysqli_commit($conn);
+            redirect_with_flash('success', 'Academic year and its terms deleted.');
+        } catch (Throwable $ex) {
+            mysqli_rollback($conn);
+            redirect_with_flash('error', 'Could not delete year.');
+        }
+    }
+
+
+    /* -------------------------------------------------------------
+       SET CURRENT TERM
+       -------------------------------------------------------------
+       - One dropdown chooses the term the school is currently in.
+       - Dates are entered for that term.
+       - Saving makes it ACTIVE and closes all other terms for that year.
+    ------------------------------------------------------------- */
+    if ($action === 'set_current_term') {
+
+        $academic_year_id = (int) ($_POST['academic_year_id'] ?? 0);
+        $term_name        = trim($_POST['term_name']        ?? '');
+        $start_date       = trim($_POST['start_date']       ?? '');
+        $end_date         = trim($_POST['end_date']         ?? '');
+
+        if ($academic_year_id <= 0) {
+            redirect_with_flash('error', 'Invalid academic year.');
+        }
+
+        if (!in_array($term_name, DEFAULT_TERMS, true)) {
+            redirect_with_flash('error', 'Please choose a valid term.');
+        }
+
+        /* Normalize dates */
+        $start_date = preg_match('/^\d{4}-\d{2}-\d{2}$/', $start_date) ? $start_date : null;
+        $end_date   = preg_match('/^\d{4}-\d{2}-\d{2}$/', $end_date)   ? $end_date   : null;
+
+        if ($start_date && $end_date && $end_date < $start_date) {
+            redirect_with_flash('error', 'End date must be after the start date.');
+        }
+
+        /* Make sure all 3 terms exist */
+        ensure_terms_for_year($conn, $academic_year_id);
+
+        mysqli_begin_transaction($conn);
+
+        try {
+
+            /* Close every term of this year */
+            $stmt = mysqli_prepare(
+                $conn,
+                "UPDATE terms SET status = 'closed' WHERE academic_year_id = ?"
+            );
+            mysqli_stmt_bind_param($stmt, 'i', $academic_year_id);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_close($stmt);
+
+            /* Set the chosen term active + its dates */
+            $stmt = mysqli_prepare(
+                $conn,
+                "UPDATE terms
+                 SET status = 'active', start_date = ?, end_date = ?
+                 WHERE academic_year_id = ? AND term_name = ?"
+            );
+            mysqli_stmt_bind_param(
+                $stmt, 'ssis',
+                $start_date, $end_date, $academic_year_id, $term_name
+            );
+            mysqli_stmt_execute($stmt);
+            $affected = mysqli_stmt_affected_rows($stmt);
+            mysqli_stmt_close($stmt);
+
+            if ($affected === 0) {
+                throw new Exception('The chosen term could not be updated.');
+            }
+
+            mysqli_commit($conn);
+
+            redirect_with_flash(
+                'success',
+                "Current term set to {$term_name}."
+            );
+
+        } catch (Throwable $ex) {
+            mysqli_rollback($conn);
+            redirect_with_flash('error', 'Could not set current term: ' . $ex->getMessage());
+        }
     }
 }
 
@@ -298,7 +468,7 @@ unset($_SESSION['ay_flash']);
 /* =========================================================================
    SEARCH
    ========================================================================= */
-$search = trim($_GET['q'] ?? '');
+$search        = trim($_GET['q'] ?? '');
 $status_filter = $_GET['status'] ?? '';
 
 $where  = [];
@@ -331,10 +501,48 @@ if ($stmt) {
     mysqli_stmt_close($stmt);
 }
 
+
 /* =========================================================================
-   COUNTS
+   LOAD TERMS FOR ALL DISPLAYED YEARS + FIND "CURRENT" TERM PER YEAR
    ========================================================================= */
-$stats = ['total' => 0, 'active' => 0, 'closed' => 0];
+
+$terms_by_year     = [];   /* [year_id => [term rows]] */
+$current_by_year   = [];   /* [year_id => term row] (the active one) */
+
+if (!empty($years)) {
+
+    $year_ids     = array_column($years, 'academic_year_id');
+    $placeholders = implode(',', array_fill(0, count($year_ids), '?'));
+    $types        = str_repeat('i', count($year_ids));
+
+    $stmt = mysqli_prepare(
+        $conn,
+        "SELECT term_id, academic_year_id, term_name, start_date, end_date, status
+         FROM terms
+         WHERE academic_year_id IN ($placeholders)
+         ORDER BY FIELD(term_name, 'Term 1','Term 2','Term 3')"
+    );
+    if ($stmt) {
+        mysqli_stmt_bind_param($stmt, $types, ...$year_ids);
+        mysqli_stmt_execute($stmt);
+        $res = mysqli_stmt_get_result($stmt);
+        while ($r = mysqli_fetch_assoc($res)) {
+            $yid = (int)$r['academic_year_id'];
+            $terms_by_year[$yid][] = $r;
+
+            if ($r['status'] === 'active' && !isset($current_by_year[$yid])) {
+                $current_by_year[$yid] = $r;
+            }
+        }
+        mysqli_stmt_close($stmt);
+    }
+}
+
+
+/* =========================================================================
+   STATS
+   ========================================================================= */
+$stats = ['total' => 0, 'active' => 0, 'closed' => 0, 'terms' => 0];
 
 $res = mysqli_query(
     $conn,
@@ -348,6 +556,11 @@ if ($res && $row = mysqli_fetch_assoc($res)) {
     $stats['total']  = (int) $row['total'];
     $stats['active'] = (int) $row['active_total'];
     $stats['closed'] = (int) $row['closed_total'];
+}
+
+$res = mysqli_query($conn, "SELECT COUNT(*) AS c FROM terms");
+if ($res && $row = mysqli_fetch_assoc($res)) {
+    $stats['terms'] = (int) $row['c'];
 }
 
 $has_filters = ($search !== '' || $status_filter !== '');
@@ -398,9 +611,6 @@ $has_filters = ($search !== '' || $status_filter !== '');
 
         body.no-scroll { overflow: hidden; }
 
-        /* =========================================================
-           MAIN LAYOUT
-        ========================================================= */
         .main-content {
             margin-left: var(--sidebar-w);
             padding: calc(var(--topbar-h) + 30px) 30px 40px;
@@ -411,9 +621,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
             body.sidebar-collapsed .main-content { margin-left: 78px; }
         }
 
-        /* =========================================================
-           PAGE HEADER
-        ========================================================= */
+        /* HEADER */
         .page-header {
             display: flex;
             align-items: center;
@@ -423,21 +631,10 @@ $has_filters = ($search !== '' || $status_filter !== '');
             flex-wrap: wrap;
         }
 
-        .page-title h1 {
-            color: var(--navy);
-            font-size: 25px;
-            font-weight: 700;
-        }
+        .page-title h1 { color: var(--navy); font-size: 25px; font-weight: 700; }
+        .page-title p  { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
 
-        .page-title p {
-            color: var(--muted);
-            font-size: 12.5px;
-            margin-top: 5px;
-        }
-
-        /* =========================================================
-           BUTTONS
-        ========================================================= */
+        /* BUTTONS */
         .btn {
             display: inline-flex;
             align-items: center;
@@ -468,9 +665,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
         }
         .btn-ghost:hover { border-color: var(--gold); }
 
-        /* =========================================================
-           ALERTS
-        ========================================================= */
+        /* ALERTS */
         .alert {
             border-radius: 8px;
             padding: 12px 15px;
@@ -478,15 +673,13 @@ $has_filters = ($search !== '' || $status_filter !== '');
             font-size: 12.5px;
             font-weight: 600;
         }
-        .alert.success { background: var(--green-bg);  border: 1px solid #cfe5d7; color: var(--green); }
-        .alert.error   { background: var(--red-bg);    border: 1px solid #efd2d2; color: var(--red); }
+        .alert.success { background: var(--green-bg); border: 1px solid #cfe5d7; color: var(--green); }
+        .alert.error   { background: var(--red-bg);   border: 1px solid #efd2d2; color: var(--red); }
 
-        /* =========================================================
-           STATS
-        ========================================================= */
+        /* STATS */
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 15px;
             margin-bottom: 22px;
         }
@@ -513,9 +706,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
             margin-top: 6px;
         }
 
-        /* =========================================================
-           FILTER
-        ========================================================= */
+        /* FILTER */
         .filter-panel {
             background: var(--white);
             border: 1px solid var(--border);
@@ -540,19 +731,14 @@ $has_filters = ($search !== '' || $status_filter !== '');
             text-align: left;
             justify-content: space-between;
             align-items: center;
-            -webkit-tap-highlight-color: transparent;
         }
 
         .filter-toggle .chev {
             color: var(--gold);
             font-size: 12px;
             transition: transform .25s ease;
-            display: inline-block;
         }
-
-        .filter-panel.collapsed .filter-toggle .chev {
-            transform: rotate(-90deg);
-        }
+        .filter-panel.collapsed .filter-toggle .chev { transform: rotate(-90deg); }
 
         .filter-form {
             display: grid;
@@ -588,9 +774,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
             box-shadow: 0 0 0 3px rgba(201,162,39,.12);
         }
 
-        /* =========================================================
-           TABLE
-        ========================================================= */
+        /* TABLE */
         .table-card {
             background: var(--white);
             border: 1px solid var(--border);
@@ -606,7 +790,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
         table {
             width: 100%;
             border-collapse: collapse;
-            min-width: 780px;
+            min-width: 900px;
         }
 
         thead th {
@@ -639,9 +823,39 @@ $has_filters = ($search !== '' || $status_filter !== '');
             font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
         }
 
-        /* =========================================================
-           STATUS
-        ========================================================= */
+        /* Current term cell */
+        .current-term {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 20px;
+            background: var(--green-bg);
+            border: 1px solid #cfe5d7;
+            color: var(--green);
+            font-size: 11.5px;
+            font-weight: 750;
+            white-space: nowrap;
+        }
+        .current-term .dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 0 3px rgba(62,118,85,.18);
+        }
+        .current-term .dates {
+            color: #2f6b47;
+            font-weight: 600;
+            font-size: 10.5px;
+        }
+
+        .no-current-term {
+            color: var(--muted);
+            font-style: italic;
+            font-size: 11.5px;
+        }
+
+        /* Status */
         .status {
             display: inline-flex;
             align-items: center;
@@ -657,9 +871,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
 
         .status::before {
             content: "";
-            width: 5px;
-            height: 5px;
-            border-radius: 50%;
+            width: 5px; height: 5px; border-radius: 50%;
         }
 
         .status-active   { color: var(--green);  background: var(--green-bg); }
@@ -668,9 +880,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
         .status-closed   { color: var(--orange); background: var(--orange-bg); }
         .status-closed::before { background: var(--orange); }
 
-        /* =========================================================
-           ACTIONS
-        ========================================================= */
+        /* Actions */
         .actions {
             display: flex;
             gap: 6px;
@@ -690,7 +900,6 @@ $has_filters = ($search !== '' || $status_filter !== '');
             cursor: pointer;
             color: var(--navy);
             transition: .15s ease;
-            -webkit-tap-highlight-color: transparent;
         }
 
         .icon-btn:hover { border-color: var(--gold); }
@@ -706,18 +915,20 @@ $has_filters = ($search !== '' || $status_filter !== '');
             border-color: var(--navy-dark);
         }
 
-        .icon-btn.danger {
-            color: var(--red);
-            border-color: #efd2d2;
+        .icon-btn.term {
+            background: var(--gold);
+            color: var(--navy);
+            border-color: var(--gold);
         }
-        .icon-btn.danger:hover {
-            background: var(--red-bg);
-            border-color: var(--red);
+        .icon-btn.term:hover {
+            background: var(--gold-light);
+            border-color: var(--gold-light);
         }
 
-        /* =========================================================
-           EMPTY
-        ========================================================= */
+        .icon-btn.danger { color: var(--red); border-color: #efd2d2; }
+        .icon-btn.danger:hover { background: var(--red-bg); border-color: var(--red); }
+
+        /* Empty */
         .empty {
             text-align: center;
             padding: 55px 20px;
@@ -725,15 +936,9 @@ $has_filters = ($search !== '' || $status_filter !== '');
             font-size: 12.5px;
         }
 
-        .empty h3 {
-            color: var(--navy);
-            font-size: 14px;
-            margin-bottom: 5px;
-        }
+        .empty h3 { color: var(--navy); font-size: 14px; margin-bottom: 5px; }
 
-        /* =========================================================
-           MOBILE CARDS
-        ========================================================= */
+        /* MOBILE CARDS */
         .card-list { display: none; }
 
         .year-card {
@@ -755,8 +960,8 @@ $has_filters = ($search !== '' || $status_filter !== '');
 
         .year-card-meta {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px 14px;
+            grid-template-columns: 1fr;
+            gap: 10px;
             margin-bottom: 12px;
         }
 
@@ -775,7 +980,6 @@ $has_filters = ($search !== '' || $status_filter !== '');
             font-size: 12.5px;
             font-weight: 600;
             word-wrap: break-word;
-            overflow-wrap: anywhere;
         }
 
         .year-card-actions {
@@ -794,9 +998,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
             font-size: 12px;
         }
 
-        /* =========================================================
-           MODAL
-        ========================================================= */
+        /* MODAL */
         .modal-backdrop {
             position: fixed;
             inset: 0;
@@ -816,7 +1018,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
             background: var(--white);
             border-radius: 14px;
             width: 100%;
-            max-width: 480px;
+            max-width: 500px;
             max-height: 92vh;
             overflow-y: auto;
             box-shadow: 0 30px 60px rgba(0,0,0,.25);
@@ -842,11 +1044,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
             z-index: 1;
         }
 
-        .modal-header h2 {
-            color: var(--navy);
-            font-size: 15px;
-            font-weight: 700;
-        }
+        .modal-header h2 { color: var(--navy); font-size: 15px; font-weight: 700; }
 
         .modal-close {
             width: 34px;
@@ -861,7 +1059,6 @@ $has_filters = ($search !== '' || $status_filter !== '');
             cursor: pointer;
             font-size: 18px;
             line-height: 1;
-            -webkit-tap-highlight-color: transparent;
         }
 
         .modal-close:hover { background: #e5e7eb; color: var(--navy); }
@@ -910,20 +1107,50 @@ $has_filters = ($search !== '' || $status_filter !== '');
             box-shadow: 0 0 0 3px rgba(201,162,39,.12);
         }
 
-        /* =========================================================
-           RESPONSIVE
-        ========================================================= */
+        select.form-control {
+            background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23747d8e' stroke-width='2'%3e%3cpolyline points='6 9 12 15 18 9'/%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            background-size: 14px;
+            padding-right: 34px;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        .date-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .hint-box {
+            padding: 12px 14px;
+            background: #eef6f0;
+            border: 1px solid #cfe5d7;
+            border-radius: 10px;
+            color: #3e7655;
+            font-size: 12.5px;
+            font-weight: 600;
+            line-height: 1.55;
+            margin-bottom: 4px;
+        }
+
+        .hint-box.warn {
+            background: var(--orange-bg);
+            border-color: #ecd9a8;
+            color: var(--orange);
+        }
+
+        /* Responsive */
         @media (max-width: 1100px) {
             .filter-form { grid-template-columns: 1fr 1fr; }
         }
 
         @media (max-width: 800px) {
-
             .main-content {
                 margin-left: 0;
                 padding: calc(var(--topbar-h) + 20px) 16px 30px;
             }
-
             body.sidebar-collapsed .main-content { margin-left: 0; }
 
             .page-header {
@@ -931,9 +1158,8 @@ $has_filters = ($search !== '' || $status_filter !== '');
                 align-items: stretch;
                 gap: 12px;
             }
-
             .page-title h1 { font-size: 21px; }
-            .page-title p  { font-size: 12px; line-height: 1.45; }
+            .page-title p  { font-size: 12px; }
 
             .page-header .btn {
                 width: 100%;
@@ -941,7 +1167,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
                 font-size: 13px;
             }
 
-            .stats-grid { grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+            .stats-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
             .stat-card  { padding: 14px; }
             .stat-card .value { font-size: 20px; }
             .stat-card .label { font-size: 9px; }
@@ -957,8 +1183,6 @@ $has_filters = ($search !== '' || $status_filter !== '');
             .table-wrapper { display: none; }
             .card-list { display: block; }
 
-            .year-card-meta { grid-template-columns: 1fr 1fr; }
-
             .modal-backdrop { padding: 12px; align-items: flex-end; }
             .modal {
                 max-width: 100%;
@@ -969,25 +1193,17 @@ $has_filters = ($search !== '' || $status_filter !== '');
             .modal-body   { padding: 18px; }
             .modal-footer { padding: 14px 18px; flex-direction: column-reverse; }
             .modal-footer .btn { width: 100%; }
+
+            .date-row { grid-template-columns: 1fr; }
         }
 
         @media (max-width: 550px) {
             .main-content { padding: calc(var(--topbar-h) + 14px) 14px 24px; }
             .page-title h1 { font-size: 19px; }
-            .page-title p  { font-size: 11.5px; }
-
             .stats-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
             .stat-card  { padding: 12px; }
             .stat-card .value { font-size: 19px; }
-
-            .year-card-meta { grid-template-columns: 1fr; gap: 8px; }
             .year-card-actions { grid-template-columns: 1fr; }
-            .year-card { padding: 14px; }
-        }
-
-        @media (max-width: 400px) {
-            .stats-grid { grid-template-columns: 1fr 1fr; }
-            .stat-card .value { font-size: 18px; }
         }
 
         @media (max-width: 800px) {
@@ -1008,7 +1224,7 @@ $has_filters = ($search !== '' || $status_filter !== '');
 
 <?php
 $topbar_title    = 'Academic Years';
-$topbar_subtitle = 'Manage school years';
+$topbar_subtitle = 'Manage school years & the current term';
 include '../includes/topbar.php';
 ?>
 
@@ -1020,7 +1236,7 @@ include '../includes/topbar.php';
     <div class="page-header">
         <div class="page-title">
             <h1>Academic Years</h1>
-            <p>Manage school academic years. Only one year can be active at a time.</p>
+            <p>Each year has 3 terms. Use <strong>Terms</strong> to set which term the school is currently in.</p>
         </div>
 
         <button type="button" class="btn btn-primary" onclick="openCreateModal()">
@@ -1049,6 +1265,10 @@ include '../includes/topbar.php';
             <div class="label">Closed</div>
             <div class="value"><?php echo number_format($stats['closed']); ?></div>
         </div>
+        <div class="stat-card">
+            <div class="label">Total Terms</div>
+            <div class="value"><?php echo number_format($stats['terms']); ?></div>
+        </div>
     </div>
 
     <!-- FILTERS -->
@@ -1059,7 +1279,6 @@ include '../includes/topbar.php';
         </button>
 
         <form method="GET" action="academic_years.php" class="filter-form">
-
             <div class="filter-group">
                 <label>Search by Year</label>
                 <input type="text" name="q" class="filter-control"
@@ -1081,7 +1300,6 @@ include '../includes/topbar.php';
             <?php if ($has_filters): ?>
                 <a href="academic_years.php" class="btn btn-ghost">Clear</a>
             <?php endif; ?>
-
         </form>
     </section>
 
@@ -1110,39 +1328,74 @@ include '../includes/topbar.php';
                         <tr>
                             <th>Year</th>
                             <th>Status</th>
+                            <th>Current Term</th>
                             <th>Created</th>
                             <th style="text-align:right;">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                    <?php foreach ($years as $y): ?>
+                    <?php foreach ($years as $y):
+                        $yid     = (int)$y['academic_year_id'];
+                        $current = $current_by_year[$yid] ?? null;
+
+                        $current_dates = '';
+                        if ($current && (!empty($current['start_date']) || !empty($current['end_date']))) {
+                            $s = $current['start_date'] ? date('M j', strtotime($current['start_date'])) : '—';
+                            $e = $current['end_date']   ? date('M j, Y', strtotime($current['end_date'])) : '—';
+                            $current_dates = $s . ' → ' . $e;
+                        }
+                    ?>
                         <tr>
-                            <td>
-                                <span class="year-number"><?php echo (int)$y['year']; ?></span>
-                            </td>
+                            <td><span class="year-number"><?php echo (int)$y['year']; ?></span></td>
+
                             <td>
                                 <span class="status status-<?php echo e($y['status']); ?>">
                                     <?php echo e($y['status']); ?>
                                 </span>
                             </td>
+
                             <td>
-                                <?php echo e(date('M j, Y', strtotime($y['created_at']))); ?>
+                                <?php if ($current): ?>
+                                    <span class="current-term">
+                                        <span class="dot"></span>
+                                        <?php echo e($current['term_name']); ?>
+                                        <?php if ($current_dates): ?>
+                                            <span class="dates">· <?php echo e($current_dates); ?></span>
+                                        <?php endif; ?>
+                                    </span>
+                                <?php else: ?>
+                                    <span class="no-current-term">No term set</span>
+                                <?php endif; ?>
                             </td>
+
+                            <td><?php echo e(date('M j, Y', strtotime($y['created_at']))); ?></td>
+
                             <td>
                                 <div class="actions">
+
+                                    <button type="button" class="icon-btn term"
+                                        onclick='openTermsModal(<?php echo json_encode([
+                                            "year_id"        => $yid,
+                                            "year"           => (int)$y["year"],
+                                            "current_term"   => $current["term_name"] ?? "",
+                                            "start_date"     => $current["start_date"] ?? "",
+                                            "end_date"       => $current["end_date"]   ?? "",
+                                        ], JSON_HEX_APOS | JSON_HEX_QUOT); ?>)'>
+                                        Terms
+                                    </button>
 
                                     <?php if ($y['status'] !== 'active'): ?>
                                         <form method="POST" style="display:inline;"
                                               onsubmit="return confirm('Set <?php echo (int)$y['year']; ?> as the active year? The current active year will be closed.');">
                                             <input type="hidden" name="action" value="activate">
-                                            <input type="hidden" name="academic_year_id" value="<?php echo (int)$y['academic_year_id']; ?>">
+                                            <input type="hidden" name="academic_year_id" value="<?php echo $yid; ?>">
                                             <button type="submit" class="icon-btn primary">Activate</button>
                                         </form>
                                     <?php else: ?>
                                         <form method="POST" style="display:inline;"
-                                              onsubmit="return confirm('Close this academic year?');">
+                                              onsubmit="return confirm('Close this academic year and its terms?');">
                                             <input type="hidden" name="action" value="close">
-                                            <input type="hidden" name="academic_year_id" value="<?php echo (int)$y['academic_year_id']; ?>">
+                                            <input type="hidden" name="academic_year_id" value="<?php echo $yid; ?>">
                                             <button type="submit" class="icon-btn">Close</button>
                                         </form>
                                     <?php endif; ?>
@@ -1153,9 +1406,9 @@ include '../includes/topbar.php';
                                     </button>
 
                                     <form method="POST" style="display:inline;"
-                                          onsubmit="return confirm('Delete this academic year permanently?');">
+                                          onsubmit="return confirm('Delete this academic year permanently? Its terms will also be removed.');">
                                         <input type="hidden" name="action" value="delete">
-                                        <input type="hidden" name="academic_year_id" value="<?php echo (int)$y['academic_year_id']; ?>">
+                                        <input type="hidden" name="academic_year_id" value="<?php echo $yid; ?>">
                                         <button type="submit" class="icon-btn danger">Delete</button>
                                     </form>
 
@@ -1169,7 +1422,17 @@ include '../includes/topbar.php';
 
             <!-- MOBILE CARDS -->
             <div class="card-list">
-                <?php foreach ($years as $y): ?>
+                <?php foreach ($years as $y):
+                    $yid     = (int)$y['academic_year_id'];
+                    $current = $current_by_year[$yid] ?? null;
+
+                    $current_dates = '';
+                    if ($current && (!empty($current['start_date']) || !empty($current['end_date']))) {
+                        $s = $current['start_date'] ? date('M j', strtotime($current['start_date'])) : '—';
+                        $e = $current['end_date']   ? date('M j, Y', strtotime($current['end_date'])) : '—';
+                        $current_dates = $s . ' → ' . $e;
+                    }
+                ?>
                     <div class="year-card">
 
                         <div class="year-card-top">
@@ -1181,28 +1444,49 @@ include '../includes/topbar.php';
 
                         <div class="year-card-meta">
                             <div class="meta-item">
+                                <span class="k">Current Term</span>
+                                <?php if ($current): ?>
+                                    <span class="current-term">
+                                        <span class="dot"></span>
+                                        <?php echo e($current['term_name']); ?>
+                                        <?php if ($current_dates): ?>
+                                            <span class="dates">· <?php echo e($current_dates); ?></span>
+                                        <?php endif; ?>
+                                    </span>
+                                <?php else: ?>
+                                    <span class="no-current-term">No term set</span>
+                                <?php endif; ?>
+                            </div>
+
+                            <div class="meta-item">
                                 <span class="k">Created</span>
                                 <span class="v"><?php echo e(date('M j, Y', strtotime($y['created_at']))); ?></span>
-                            </div>
-                            <div class="meta-item">
-                                <span class="k">ID</span>
-                                <span class="v">#<?php echo (int)$y['academic_year_id']; ?></span>
                             </div>
                         </div>
 
                         <div class="year-card-actions">
+
+                            <button type="button" class="icon-btn term"
+                                    onclick='openTermsModal(<?php echo json_encode([
+                                        "year_id"      => $yid,
+                                        "year"         => (int)$y["year"],
+                                        "current_term" => $current["term_name"] ?? "",
+                                        "start_date"   => $current["start_date"] ?? "",
+                                        "end_date"     => $current["end_date"]   ?? "",
+                                    ], JSON_HEX_APOS | JSON_HEX_QUOT); ?>)'>
+                                Terms
+                            </button>
+
                             <?php if ($y['status'] !== 'active'): ?>
-                                <form method="POST"
-                                      onsubmit="return confirm('Set <?php echo (int)$y['year']; ?> as the active year?');">
+                                <form method="POST" onsubmit="return confirm('Activate this year?');">
                                     <input type="hidden" name="action" value="activate">
-                                    <input type="hidden" name="academic_year_id" value="<?php echo (int)$y['academic_year_id']; ?>">
+                                    <input type="hidden" name="academic_year_id" value="<?php echo $yid; ?>">
                                     <button type="submit" class="icon-btn primary">Activate</button>
                                 </form>
                             <?php else: ?>
-                                <form method="POST"
-                                      onsubmit="return confirm('Close this academic year?');">
+                                <form method="POST" onsubmit="return confirm('Close this year?');">
                                     <input type="hidden" name="action" value="close">
-                                    <input type="hidden" name="academic_year_id" value="<?php echo (int)$y['academic_year_id']; ?>">
+                                    <input type="hidden" name="academic_year_id" value="<?php echo $yid; ?>">
                                     <button type="submit" class="icon-btn">Close</button>
                                 </form>
                             <?php endif; ?>
@@ -1212,12 +1496,12 @@ include '../includes/topbar.php';
                                 Edit
                             </button>
 
-                            <form method="POST"
-                                  onsubmit="return confirm('Delete this academic year permanently?');">
+                            <form method="POST" onsubmit="return confirm('Delete this year and its terms?');">
                                 <input type="hidden" name="action" value="delete">
-                                <input type="hidden" name="academic_year_id" value="<?php echo (int)$y['academic_year_id']; ?>">
+                                <input type="hidden" name="academic_year_id" value="<?php echo $yid; ?>">
                                 <button type="submit" class="icon-btn danger">Delete</button>
                             </form>
+
                         </div>
 
                     </div>
@@ -1237,24 +1521,17 @@ include '../includes/topbar.php';
 <div class="modal-backdrop" id="createModal">
     <div class="modal">
         <form method="POST" action="academic_years.php">
-
             <div class="modal-header">
                 <h2>Add Academic Year</h2>
                 <button type="button" class="modal-close" onclick="closeModal('createModal')">✕</button>
             </div>
 
             <div class="modal-body">
-
                 <div class="form-group">
                     <label>Year <span class="required">*</span></label>
-                    <input type="number"
-                           name="year"
-                           class="form-control"
-                           min="2000"
-                           max="2100"
-                           step="1"
-                           placeholder="e.g. 2025"
-                           required>
+                    <input type="number" name="year" class="form-control"
+                           min="2000" max="2100" step="1"
+                           placeholder="e.g. 2025" required>
                 </div>
 
                 <div class="form-group">
@@ -1265,15 +1542,17 @@ include '../includes/topbar.php';
                     </select>
                 </div>
 
+                <div class="hint-box">
+                    Three default terms (<strong>Term 1</strong>, <strong>Term 2</strong>,
+                    <strong>Term 3</strong>) will be created automatically. Use the
+                    <em>Terms</em> button afterwards to choose which term the school is
+                    currently in.
+                </div>
             </div>
 
             <div class="modal-footer">
-                <button type="button" class="btn btn-ghost" onclick="closeModal('createModal')">
-                    Cancel
-                </button>
-                <button type="submit" class="btn btn-primary">
-                    Create Year
-                </button>
+                <button type="button" class="btn btn-ghost" onclick="closeModal('createModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Create Year</button>
             </div>
 
             <input type="hidden" name="action" value="create">
@@ -1288,24 +1567,16 @@ include '../includes/topbar.php';
 <div class="modal-backdrop" id="editModal">
     <div class="modal">
         <form method="POST" action="academic_years.php">
-
             <div class="modal-header">
                 <h2>Edit Academic Year</h2>
                 <button type="button" class="modal-close" onclick="closeModal('editModal')">✕</button>
             </div>
 
             <div class="modal-body">
-
                 <div class="form-group">
                     <label>Year <span class="required">*</span></label>
-                    <input type="number"
-                           name="year"
-                           id="edit_year"
-                           class="form-control"
-                           min="2000"
-                           max="2100"
-                           step="1"
-                           required>
+                    <input type="number" name="year" id="edit_year" class="form-control"
+                           min="2000" max="2100" step="1" required>
                 </div>
 
                 <div class="form-group">
@@ -1315,16 +1586,11 @@ include '../includes/topbar.php';
                         <option value="closed">Closed</option>
                     </select>
                 </div>
-
             </div>
 
             <div class="modal-footer">
-                <button type="button" class="btn btn-ghost" onclick="closeModal('editModal')">
-                    Cancel
-                </button>
-                <button type="submit" class="btn btn-primary">
-                    Save Changes
-                </button>
+                <button type="button" class="btn btn-ghost" onclick="closeModal('editModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save Changes</button>
             </div>
 
             <input type="hidden" name="action" value="update">
@@ -1334,9 +1600,63 @@ include '../includes/topbar.php';
 </div>
 
 
+<!-- =========================================================
+     TERMS MODAL (current term selector + dates)
+========================================================= -->
+<div class="modal-backdrop" id="termsModal">
+    <div class="modal">
+        <form method="POST" action="academic_years.php" id="termsForm">
+
+            <div class="modal-header">
+                <h2 id="termsModalTitle">Set Current Term</h2>
+                <button type="button" class="modal-close" onclick="closeModal('termsModal')">✕</button>
+            </div>
+
+            <div class="modal-body">
+
+                <div class="hint-box" id="termsHint">
+                    Choose the term the school is currently in, add its start and end dates,
+                    then save. The chosen term becomes <strong>active</strong> and all others
+                    for this year are closed.
+                </div>
+
+                <div class="form-group">
+                    <label>Current Term <span class="required">*</span></label>
+                    <select name="term_name" id="term_name" class="form-control" required>
+                        <option value="Term 1">Term 1</option>
+                        <option value="Term 2">Term 2</option>
+                        <option value="Term 3">Term 3</option>
+                    </select>
+                </div>
+
+                <div class="date-row">
+                    <div class="form-group">
+                        <label>Start Date</label>
+                        <input type="date" name="start_date" id="term_start_date" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label>End Date</label>
+                        <input type="date" name="end_date" id="term_end_date" class="form-control">
+                    </div>
+                </div>
+
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost" onclick="closeModal('termsModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save &amp; Activate</button>
+            </div>
+
+            <input type="hidden" name="action" value="set_current_term">
+            <input type="hidden" name="academic_year_id" id="terms_year_id">
+        </form>
+    </div>
+</div>
+
+
 <script>
 /* =========================================================
-   MODAL CONTROLS
+   MODAL HELPERS
 ========================================================= */
 function openCreateModal() {
     document.getElementById('createModal').classList.add('open');
@@ -1350,6 +1670,45 @@ function openEditModal(data) {
 
     document.getElementById('editModal').classList.add('open');
     document.body.classList.add('no-scroll');
+}
+
+function openTermsModal(data) {
+    document.getElementById('terms_year_id').value = data.year_id;
+
+    document.getElementById('termsModalTitle').textContent =
+        'Set Current Term — ' + data.year;
+
+    /* Prefill dropdown with current term if present */
+    const termName = data.current_term || 'Term 1';
+    document.getElementById('term_name').value = termName;
+
+    document.getElementById('term_start_date').value = data.start_date || '';
+    document.getElementById('term_end_date').value   = data.end_date   || '';
+
+    /* Update the hint message based on whether a term is already set */
+    const hint = document.getElementById('termsHint');
+    if (data.current_term) {
+        hint.className = 'hint-box warn';
+        hint.innerHTML = 'This year is currently in <strong>' +
+            escapeHtml(data.current_term) + '</strong>. Choose another term to switch. ' +
+            'The chosen term becomes <strong>active</strong> and the others are closed.';
+    } else {
+        hint.className = 'hint-box';
+        hint.innerHTML = 'No term is set yet for this year. Choose the term the school ' +
+            'is currently in, add its start and end dates, then save.';
+    }
+
+    document.getElementById('termsModal').classList.add('open');
+    document.body.classList.add('no-scroll');
+}
+
+function escapeHtml(v) {
+    return String(v ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
 function closeModal(id) {
@@ -1391,7 +1750,6 @@ document.addEventListener('keydown', e => {
             filterPanel.classList.remove('collapsed');
         }
     }
-
     syncFilterState();
     mq.addEventListener
         ? mq.addEventListener('change', syncFilterState)

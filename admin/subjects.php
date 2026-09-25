@@ -46,6 +46,136 @@ $valid_types = [
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
+    /* -------------------------------------------------------------
+       AJAX: ASSIGN SUBJECTS TO CLASSES
+    ------------------------------------------------------------- */
+    if (($_POST['ajax_action'] ?? '') === 'assign_subjects') {
+        header('Content-Type: application/json; charset=utf-8');
+
+        $class_ids   = $_POST['class_ids'] ?? [];
+        $subject_ids = $_POST['subject_ids'] ?? [];
+
+        if (!is_array($class_ids)) $class_ids = [$class_ids];
+        if (!is_array($subject_ids)) $subject_ids = [$subject_ids];
+
+        $class_ids = array_values(array_unique(array_filter(array_map('intval', $class_ids), fn($id) => $id > 0)));
+        $subject_ids = array_values(array_unique(array_filter(array_map('intval', $subject_ids), fn($id) => $id > 0)));
+
+        if (!$class_ids) {
+            echo json_encode(['success' => false, 'message' => 'Please select at least one class.']);
+            exit;
+        }
+        if (!$subject_ids) {
+            echo json_encode(['success' => false, 'message' => 'Please select at least one subject.']);
+            exit;
+        }
+
+        /* Create the relationship table automatically if it does not exist. */
+        $create_table = "
+            CREATE TABLE IF NOT EXISTS class_subjects (
+                class_subject_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                class_id INT NOT NULL,
+                subject_id INT NOT NULL,
+                assigned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (class_subject_id),
+                UNIQUE KEY uq_class_subject (class_id, subject_id),
+                KEY idx_class_id (class_id),
+                KEY idx_subject_id (subject_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ";
+
+        if (!mysqli_query($conn, $create_table)) {
+            echo json_encode(['success' => false, 'message' => 'Could not prepare the assignment table: ' . mysqli_error($conn)]);
+            exit;
+        }
+
+        /* Validate selected classes. */
+        $valid_classes = [];
+        $stmt = mysqli_prepare($conn, 'SELECT class_id FROM classes WHERE class_id = ? LIMIT 1');
+        if (!$stmt) {
+            echo json_encode(['success' => false, 'message' => 'Could not validate the selected classes.']);
+            exit;
+        }
+        foreach ($class_ids as $id) {
+            mysqli_stmt_bind_param($stmt, 'i', $id);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_store_result($stmt);
+            if (mysqli_stmt_num_rows($stmt) > 0) $valid_classes[] = $id;
+            mysqli_stmt_free_result($stmt);
+        }
+        mysqli_stmt_close($stmt);
+
+        if (!$valid_classes) {
+            echo json_encode(['success' => false, 'message' => 'None of the selected classes could be found.']);
+            exit;
+        }
+
+        /* Validate selected subjects. */
+        $valid_subjects = [];
+        $stmt = mysqli_prepare($conn, 'SELECT subject_id FROM subjects WHERE subject_id = ? LIMIT 1');
+        if (!$stmt) {
+            echo json_encode(['success' => false, 'message' => 'Could not validate the selected subjects.']);
+            exit;
+        }
+        foreach ($subject_ids as $id) {
+            mysqli_stmt_bind_param($stmt, 'i', $id);
+            mysqli_stmt_execute($stmt);
+            mysqli_stmt_store_result($stmt);
+            if (mysqli_stmt_num_rows($stmt) > 0) $valid_subjects[] = $id;
+            mysqli_stmt_free_result($stmt);
+        }
+        mysqli_stmt_close($stmt);
+
+        if (!$valid_subjects) {
+            echo json_encode(['success' => false, 'message' => 'None of the selected subjects could be found.']);
+            exit;
+        }
+
+        $insert = mysqli_prepare($conn, 'INSERT IGNORE INTO class_subjects (class_id, subject_id) VALUES (?, ?)');
+        if (!$insert) {
+            echo json_encode(['success' => false, 'message' => 'Could not prepare the assignment query: ' . mysqli_error($conn)]);
+            exit;
+        }
+
+        $assigned = 0;
+        $already_exists = 0;
+        mysqli_begin_transaction($conn);
+
+        try {
+            foreach ($valid_classes as $class_id) {
+                foreach ($valid_subjects as $subject_id) {
+                    mysqli_stmt_bind_param($insert, 'ii', $class_id, $subject_id);
+                    if (!mysqli_stmt_execute($insert)) {
+                        throw new Exception(mysqli_stmt_error($insert));
+                    }
+                    if (mysqli_stmt_affected_rows($insert) > 0) $assigned++;
+                    else $already_exists++;
+                }
+            }
+
+            mysqli_commit($conn);
+            mysqli_stmt_close($insert);
+
+            $message = $assigned . ' subject assignment' . ($assigned === 1 ? '' : 's') . ' saved successfully.';
+            if ($already_exists > 0) {
+                $message .= ' ' . $already_exists . ' assignment' . ($already_exists === 1 ? '' : 's') . ' already existed.';
+            }
+
+            echo json_encode([
+                'success' => true,
+                'message' => $message,
+                'assigned' => $assigned,
+                'already_exists' => $already_exists
+            ]);
+            exit;
+        } catch (Throwable $e) {
+            mysqli_rollback($conn);
+            mysqli_stmt_close($insert);
+            echo json_encode(['success' => false, 'message' => 'Assignment failed: ' . $e->getMessage()]);
+            exit;
+        }
+    }
+
     $action = $_POST['action'] ?? '';
 
     /* -------------------------------------------------------------
@@ -73,7 +203,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $status = 'active';
         }
 
-        /* Duplicate check: subject_name */
         if (empty($errors)) {
             $stmt = mysqli_prepare(
                 $conn,
@@ -100,7 +229,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        /* Insert */
         $stmt = mysqli_prepare(
             $conn,
             "INSERT INTO subjects (subject_name, subject_type, status)
@@ -160,7 +288,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $status = 'active';
         }
 
-        /* Duplicate name check (excluding self) */
         if (empty($errors)) {
             $stmt = mysqli_prepare(
                 $conn,
@@ -281,6 +408,92 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $flash = $_SESSION['subjects_flash'] ?? null;
 unset($_SESSION['subjects_flash']);
+
+
+/* =========================================================================
+   FETCH CLASSES (REAL DATA FROM DATABASE)
+   ========================================================================= */
+
+$classes = [];
+
+$class_res = mysqli_query(
+    $conn,
+    "SELECT class_id, class_name FROM classes ORDER BY class_name ASC"
+);
+
+if ($class_res) {
+    while ($row = mysqli_fetch_assoc($class_res)) {
+        $classes[] = [
+            'id'   => (int) $row['class_id'],
+            'name' => $row['class_name'],
+        ];
+    }
+    mysqli_free_result($class_res);
+}
+
+
+/* =========================================================================
+   FETCH ASSIGNED SUBJECT IDS PER CLASS (for the modal filter)
+   ========================================================================= */
+
+$assignments_map = [];
+
+$map_res = mysqli_query($conn, "SELECT class_id, subject_id FROM class_subjects");
+if ($map_res) {
+    while ($row = mysqli_fetch_assoc($map_res)) {
+        $cid = (int) $row['class_id'];
+        $sid = (int) $row['subject_id'];
+        if (!isset($assignments_map[$cid])) $assignments_map[$cid] = [];
+        $assignments_map[$cid][] = $sid;
+    }
+    mysqli_free_result($map_res);
+}
+
+
+/* =========================================================================
+   FETCH CLASS ASSIGNMENTS (for the assignment card)
+   ========================================================================= */
+
+$class_assignments = [];
+
+$assign_res = mysqli_query(
+    $conn,
+    "SELECT
+        c.class_id,
+        c.class_name,
+        s.subject_id,
+        s.subject_name,
+        s.subject_type
+     FROM classes c
+     LEFT JOIN class_subjects cs ON cs.class_id = c.class_id
+     LEFT JOIN subjects s        ON s.subject_id = cs.subject_id
+     ORDER BY c.class_name ASC, s.subject_name ASC"
+);
+
+if ($assign_res) {
+    while ($row = mysqli_fetch_assoc($assign_res)) {
+        $cid = (int) $row['class_id'];
+
+        if (!isset($class_assignments[$cid])) {
+            $class_assignments[$cid] = [
+                'class_id'   => $cid,
+                'class_name' => $row['class_name'],
+                'subjects'   => [],
+            ];
+        }
+
+        if (!empty($row['subject_id'])) {
+            $class_assignments[$cid]['subjects'][] = [
+                'subject_id'   => (int) $row['subject_id'],
+                'subject_name' => $row['subject_name'],
+                'subject_type' => $row['subject_type'],
+            ];
+        }
+    }
+    mysqli_free_result($assign_res);
+}
+
+$class_assignments = array_values($class_assignments);
 
 
 /* =========================================================================
@@ -425,9 +638,6 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
 
         body.no-scroll { overflow: hidden; }
 
-        /* =========================================================
-           MOBILE TOPBAR
-        ========================================================= */
         .mobile-topbar {
             display: none;
             position: fixed;
@@ -483,9 +693,6 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
 
         .sidebar-overlay.open { display: block; opacity: 1; }
 
-        /* =========================================================
-           MAIN CONTENT
-        ========================================================= */
         .main-content {
             margin-left: var(--sidebar-w);
             padding: calc(var(--topbar-h) + 30px) 30px 40px;
@@ -496,9 +703,6 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
             body.sidebar-collapsed .main-content { margin-left: 78px; }
         }
 
-        /* =========================================================
-           PAGE HEADER
-        ========================================================= */
         .page-header {
             display: flex;
             align-items: center;
@@ -549,9 +753,13 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
         }
         .btn-ghost:hover { border-color: var(--gold); }
 
-        /* =========================================================
-           STATS
-        ========================================================= */
+        .btn-gold {
+            background: var(--gold);
+            color: var(--navy-dark);
+            font-weight: 800;
+        }
+        .btn-gold:hover { background: var(--gold-light); }
+
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -581,9 +789,6 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
             margin-top: 6px;
         }
 
-        /* =========================================================
-           ALERTS
-        ========================================================= */
         .alert {
             border-radius: 8px;
             padding: 12px 15px;
@@ -594,9 +799,6 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
         .alert.success { background: var(--green-bg); border: 1px solid #cfe5d7; color: var(--green); }
         .alert.error   { background: var(--red-bg);   border: 1px solid #efd2d2; color: var(--red); }
 
-        /* =========================================================
-           FILTERS
-        ========================================================= */
         .filter-panel {
             background: var(--white);
             border: 1px solid var(--border);
@@ -639,14 +841,12 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
             box-shadow: 0 0 0 3px rgba(201,162,39,.12);
         }
 
-        /* =========================================================
-           TABLE
-        ========================================================= */
         .table-card {
             background: var(--white);
             border: 1px solid var(--border);
             border-radius: 10px;
             overflow: hidden;
+            margin-bottom: 24px;
         }
 
         .table-wrapper {
@@ -695,9 +895,6 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
             margin-top: 2px;
         }
 
-        /* =========================================================
-           TYPE BADGES — 10 types
-        ========================================================= */
         .badge {
             display: inline-block;
             font-size: 9.5px;
@@ -720,9 +917,6 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
         .badge-vocational { background: var(--leaf-bg);   color: var(--leaf); }
         .badge-other      { background: var(--grey-bg);   color: var(--grey); }
 
-        /* =========================================================
-           STATUS
-        ========================================================= */
         .status {
             display: inline-flex;
             align-items: center;
@@ -746,9 +940,6 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
         .status-inactive { color: var(--orange); background: var(--orange-bg); }
         .status-inactive::before { background: var(--orange); }
 
-        /* =========================================================
-           ACTIONS
-        ========================================================= */
         .actions {
             display: flex;
             gap: 6px;
@@ -777,9 +968,9 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
         .icon-btn.danger { color: var(--red); }
         .icon-btn.danger:hover { border-color: var(--red); background: var(--red-bg); }
 
-        /* =========================================================
-           EMPTY
-        ========================================================= */
+        .icon-btn.assign { color: var(--gold); border-color: var(--gold); font-weight: 800; }
+        .icon-btn.assign:hover { background: #fef9e7; }
+
         .empty {
             text-align: center;
             padding: 55px 20px;
@@ -793,9 +984,6 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
             margin-bottom: 5px;
         }
 
-        /* =========================================================
-           MOBILE CARD LIST
-        ========================================================= */
         .card-list { display: none; }
 
         .subject-card {
@@ -852,9 +1040,110 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
             font-size: 11.5px;
         }
 
-        /* =========================================================
-           MODAL
-        ========================================================= */
+        /* ===== CLASS ASSIGNMENTS CARD ===== */
+        .assignments-card {
+            background: var(--white);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 22px;
+        }
+
+        .assignments-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid var(--border);
+            flex-wrap: wrap;
+        }
+
+        .assignments-card-header h2 {
+            color: var(--navy);
+            font-size: 15px;
+            font-weight: 750;
+        }
+
+        .assignments-count-badge {
+            background: var(--blue-bg);
+            color: var(--blue);
+            font-size: 11px;
+            font-weight: 800;
+            padding: 5px 12px;
+            border-radius: 20px;
+        }
+
+        .assignments-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 14px;
+        }
+
+        .class-assign-card {
+            background: #fafbfd;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px 16px;
+            transition: border-color .15s ease, box-shadow .15s ease;
+        }
+
+        .class-assign-card:hover {
+            border-color: var(--gold);
+            box-shadow: 0 3px 12px rgba(201,162,39,.10);
+        }
+
+        .class-assign-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .class-assign-name {
+            color: var(--navy);
+            font-size: 13px;
+            font-weight: 750;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .class-assign-count {
+            background: var(--gold);
+            color: var(--navy-dark);
+            font-size: 10px;
+            font-weight: 800;
+            padding: 3px 9px;
+            border-radius: 20px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .class-assign-subjects {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .class-assign-subjects .badge {
+            font-size: 9.5px;
+            padding: 4px 9px;
+            text-transform: none;
+            letter-spacing: 0;
+            font-weight: 700;
+        }
+
+        .class-assign-empty {
+            color: var(--muted);
+            font-size: 11.5px;
+            font-style: italic;
+            padding: 6px 0;
+        }
+
+        /* Modal */
         .modal-backdrop {
             position: fixed;
             inset: 0;
@@ -965,70 +1254,240 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
             flex-shrink: 0;
         }
 
-        /* =========================================================
-           RESPONSIVE
-        ========================================================= */
+        /* ===== ASSIGN MODAL SPECIAL ===== */
+        .assign-class-selector {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 14px;
+            margin-bottom: 18px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .assign-class-selector label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--navy);
+            cursor: pointer;
+            background: #f4f6fa;
+            padding: 8px 14px;
+            border-radius: 30px;
+            border: 1px solid transparent;
+            transition: all .15s;
+        }
+
+        .assign-class-selector label:hover {
+            background: #e9edf4;
+        }
+
+        .assign-class-selector input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--gold);
+            cursor: pointer;
+        }
+
+        .assign-class-selector label.checked {
+            background: #fef9e7;
+            border-color: var(--gold);
+        }
+
+        .subject-checkbox-list {
+            max-height: 320px;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #fcfcfd;
+            margin-bottom: 6px;
+        }
+
+        .subject-checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            border-bottom: 1px solid #f0f1f3;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background .1s;
+        }
+
+        .subject-checkbox-item:last-child { border-bottom: none; }
+        .subject-checkbox-item:hover { background: #f6f8fc; }
+
+        .subject-checkbox-item input[type="checkbox"] {
+            width: 17px;
+            height: 17px;
+            accent-color: var(--navy);
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+
+        .subject-checkbox-item .sub-info {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .subject-checkbox-item .sub-name {
+            font-weight: 600;
+            color: var(--navy);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .subject-checkbox-item .sub-type {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: var(--muted);
+            background: #f0f2f5;
+            padding: 3px 8px;
+            border-radius: 12px;
+            flex-shrink: 0;
+        }
+
+        .select-all-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 14px;
+            background: #f8f9fc;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .select-all-bar label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--navy);
+            cursor: pointer;
+        }
+
+        .select-all-bar input[type="checkbox"] {
+            width: 16px; height: 16px;
+            accent-color: var(--gold);
+            cursor: pointer;
+        }
+
+        .select-all-bar input[type="checkbox"]:disabled {
+            opacity: .5;
+            cursor: not-allowed;
+        }
+
+        .selected-count-badge {
+            background: var(--gold);
+            color: var(--navy-dark);
+            font-size: 11px;
+            font-weight: 800;
+            padding: 4px 12px;
+            border-radius: 20px;
+        }
+
+        .assign-filter-toggle {
+            background: #fff8e1;
+            border: 1px solid #f0d98c;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-bottom: 12px;
+            font-size: 12px;
+        }
+
+        .assign-filter-toggle label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--navy);
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .assign-filter-toggle input[type="checkbox"] {
+            width: 16px; height: 16px;
+            accent-color: var(--gold);
+            cursor: pointer;
+        }
+
+        .assign-hidden {
+            display: none !important;
+        }
+
+        .assign-status-message {
+            margin-top: 14px;
+            padding: 12px 14px;
+            border-radius: 10px;
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 1.45;
+        }
+
+        .assign-status-message.success {
+            background: #ecfdf3;
+            color: #166534;
+            border: 1px solid #86efac;
+        }
+
+        .assign-status-message.error {
+            background: #fef2f2;
+            color: #991b1b;
+            border: 1px solid #fca5a5;
+        }
+
+        .assign-empty {
+            text-align: center;
+            padding: 30px 20px;
+            color: var(--muted);
+            font-size: 12.5px;
+        }
+
         @media (max-width: 1100px) {
             .filter-form { grid-template-columns: 1fr 1fr; }
         }
 
         @media (max-width: 800px) {
-
             .mobile-topbar { display: flex; }
-
-            .main-content {
-                margin-left: 0;
-                padding: 78px 16px 30px;
-            }
-
-            .page-header {
-                flex-direction: column;
-                align-items: stretch;
-                gap: 12px;
-            }
-
+            .main-content { margin-left: 0; padding: 78px 16px 30px; }
+            .page-header { flex-direction: column; align-items: stretch; gap: 12px; }
             .page-title h1 { font-size: 21px; }
-
-            .page-header .btn {
-                width: 100%;
-                min-height: 46px;
-                font-size: 13px;
-            }
-
+            .page-header .btn { width: 100%; min-height: 46px; font-size: 13px; }
             .stats-grid { grid-template-columns: repeat(3, 1fr); gap: 10px; }
             .stat-card  { padding: 14px; }
             .stat-card .value { font-size: 20px; }
-
             .filter-form { grid-template-columns: 1fr; gap: 12px; }
-            .filter-control,
-            .btn { height: 46px; font-size: 13px; }
-
-            /* Table → Cards */
+            .filter-control, .btn { height: 46px; font-size: 13px; }
             .table-wrapper { display: none; }
             .card-list { display: block; }
         }
 
         @media (max-width: 550px) {
-
             .main-content { padding: 74px 14px 24px; }
-
             .stats-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
             .stat-card .value { font-size: 18px; }
             .stat-card .label { font-size: 9px; }
-
             .subject-card-meta { grid-template-columns: 1fr; gap: 8px; }
             .subject-card-actions { grid-template-columns: 1fr 1fr; }
-
             .form-grid { grid-template-columns: 1fr; }
-
             .modal-backdrop { padding: 12px; align-items: flex-start; }
             .modal { margin-top: 20px; border-radius: 12px; max-width: 100%; }
             .modal-body { padding: 18px; }
-            .modal-footer {
-                flex-direction: column-reverse;
-                padding: 14px 18px;
-            }
+            .modal-footer { flex-direction: column-reverse; padding: 14px 18px; }
             .modal-footer .btn { width: 100%; }
+            .assign-class-selector { flex-direction: column; gap: 8px; }
+            .assign-class-selector label { width: 100%; }
+            .assignments-grid { grid-template-columns: 1fr; }
         }
 
         @media (max-width: 380px) {
@@ -1049,7 +1508,6 @@ $has_filters = ($search !== '' || $type_filter !== '' || $status_filter !== '');
 </head>
 <body>
 
-<!-- MOBILE TOPBAR -->
 <div class="mobile-topbar">
     <div class="brand">PSRMS <span>Admin</span></div>
     <button type="button" class="hamburger" id="hamburgerBtn" aria-label="Menu">
@@ -1068,26 +1526,28 @@ include '../includes/topbar.php';
 
 <main class="main-content">
 
-    <!-- HEADER -->
     <div class="page-header">
         <div class="page-title">
             <h1>Subjects</h1>
             <p>Manage all subjects taught in the school.</p>
         </div>
 
-        <button type="button" class="btn btn-primary" onclick="openCreateModal()">
-            + Add Subject
-        </button>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-gold" onclick="openAssignModal()">
+                📚 Assign to Classes
+            </button>
+            <button type="button" class="btn btn-primary" onclick="openCreateModal()">
+                + Add Subject
+            </button>
+        </div>
     </div>
 
-    <!-- FLASH -->
     <?php if ($flash): ?>
         <div class="alert <?php echo e($flash['type']); ?>">
             <?php echo e($flash['message']); ?>
         </div>
     <?php endif; ?>
 
-    <!-- STATS -->
     <div class="stats-grid">
         <div class="stat-card">
             <div class="label">Total Subjects</div>
@@ -1103,21 +1563,12 @@ include '../includes/topbar.php';
         </div>
     </div>
 
-    <!-- FILTERS -->
     <form method="GET" class="filter-panel">
         <div class="filter-form">
-
             <div class="filter-group">
                 <label>Search</label>
-                <input
-                    type="text"
-                    name="q"
-                    class="filter-control"
-                    placeholder="Subject name…"
-                    value="<?php echo e($search); ?>"
-                >
+                <input type="text" name="q" class="filter-control" placeholder="Subject name…" value="<?php echo e($search); ?>">
             </div>
-
             <div class="filter-group">
                 <label>Type</label>
                 <select name="type" class="filter-control">
@@ -1129,7 +1580,6 @@ include '../includes/topbar.php';
                     <?php endforeach; ?>
                 </select>
             </div>
-
             <div class="filter-group">
                 <label>Status</label>
                 <select name="status" class="filter-control">
@@ -1138,35 +1588,21 @@ include '../includes/topbar.php';
                     <option value="inactive" <?php echo $status_filter === 'inactive' ? 'selected' : ''; ?>>Inactive</option>
                 </select>
             </div>
-
             <button type="submit" class="btn btn-ghost">Filter</button>
-
             <?php if ($has_filters): ?>
                 <a href="subjects.php" class="btn btn-ghost">Clear</a>
             <?php endif; ?>
-
         </div>
     </form>
 
-    <!-- TABLE / CARDS -->
     <div class="table-card">
-
         <?php if (empty($subjects)): ?>
-
             <div class="empty">
                 <h3>No subjects found</h3>
-                <p>
-                    <?php if ($has_filters): ?>
-                        Try clearing the filters.
-                    <?php else: ?>
-                        Add your first subject to get started.
-                    <?php endif; ?>
-                </p>
+                <p><?php echo $has_filters ? 'Try clearing the filters.' : 'Add your first subject to get started.'; ?></p>
             </div>
-
         <?php else: ?>
 
-            <!-- DESKTOP TABLE -->
             <div class="table-wrapper">
                 <table>
                     <thead>
@@ -1183,35 +1619,31 @@ include '../includes/topbar.php';
                     <?php $n = 1; foreach ($subjects as $s): ?>
                         <tr>
                             <td><?php echo $n++; ?></td>
-
                             <td>
                                 <div class="subject-name"><?php echo e($s['subject_name']); ?></div>
                                 <div class="subject-id">ID #<?php echo (int)$s['subject_id']; ?></div>
                             </td>
-
                             <td>
                                 <span class="badge badge-<?php echo e($s['subject_type']); ?>">
                                     <?php echo e($s['subject_type']); ?>
                                 </span>
                             </td>
-
                             <td>
                                 <span class="status status-<?php echo e($s['status']); ?>">
                                     <?php echo e(ucfirst($s['status'])); ?>
                                 </span>
                             </td>
-
-                            <td>
-                                <?php echo e(date('M j, Y', strtotime($s['created_at']))); ?>
-                            </td>
-
+                            <td><?php echo e(date('M j, Y', strtotime($s['created_at']))); ?></td>
                             <td>
                                 <div class="actions">
+                                    <button type="button" class="icon-btn assign"
+                                        onclick='openAssignForSubject(<?php echo (int)$s["subject_id"]; ?>, "<?php echo e(addslashes($s["subject_name"])); ?>")'>
+                                        Assign
+                                    </button>
                                     <button type="button" class="icon-btn"
                                         onclick='openEditModal(<?php echo json_encode($s, JSON_HEX_APOS | JSON_HEX_QUOT); ?>)'>
                                         Edit
                                     </button>
-
                                     <form method="POST" style="display:inline;"
                                           onsubmit="return confirm('Toggle status for this subject?');">
                                         <input type="hidden" name="action" value="toggle">
@@ -1220,7 +1652,6 @@ include '../includes/topbar.php';
                                             <?php echo $s['status'] === 'active' ? 'Deactivate' : 'Activate'; ?>
                                         </button>
                                     </form>
-
                                     <form method="POST" style="display:inline;"
                                           onsubmit="return confirm('Delete this subject permanently?');">
                                         <input type="hidden" name="action" value="delete">
@@ -1235,11 +1666,9 @@ include '../includes/topbar.php';
                 </table>
             </div>
 
-            <!-- MOBILE CARDS -->
             <div class="card-list">
                 <?php foreach ($subjects as $s): ?>
                     <div class="subject-card">
-
                         <div class="subject-card-top">
                             <div style="min-width:0;flex:1;">
                                 <div class="subject-name"><?php echo e($s['subject_name']); ?></div>
@@ -1249,7 +1678,6 @@ include '../includes/topbar.php';
                                 <?php echo e(ucfirst($s['status'])); ?>
                             </span>
                         </div>
-
                         <div class="subject-card-meta">
                             <div class="meta-item">
                                 <span class="k">Type</span>
@@ -1261,45 +1689,150 @@ include '../includes/topbar.php';
                             </div>
                             <div class="meta-item">
                                 <span class="k">Created</span>
-                                <span class="v">
-                                    <?php echo e(date('M j, Y', strtotime($s['created_at']))); ?>
-                                </span>
+                                <span class="v"><?php echo e(date('M j, Y', strtotime($s['created_at']))); ?></span>
                             </div>
                         </div>
-
                         <div class="subject-card-actions">
+                            <button type="button" class="icon-btn assign"
+                                onclick='openAssignForSubject(<?php echo (int)$s["subject_id"]; ?>, "<?php echo e(addslashes($s["subject_name"])); ?>")'>
+                                Assign
+                            </button>
                             <button type="button" class="icon-btn"
                                 onclick='openEditModal(<?php echo json_encode($s, JSON_HEX_APOS | JSON_HEX_QUOT); ?>)'>
                                 Edit
                             </button>
-
-                            <form method="POST"
-                                  onsubmit="return confirm('Toggle status for this subject?');">
+                            <form method="POST" onsubmit="return confirm('Toggle status for this subject?');">
                                 <input type="hidden" name="action" value="toggle">
                                 <input type="hidden" name="subject_id" value="<?php echo (int)$s['subject_id']; ?>">
                                 <button type="submit" class="icon-btn">
                                     <?php echo $s['status'] === 'active' ? 'Deactivate' : 'Activate'; ?>
                                 </button>
                             </form>
-
-                            <form method="POST"
-                                  onsubmit="return confirm('Delete this subject permanently?');">
+                            <form method="POST" onsubmit="return confirm('Delete this subject permanently?');">
                                 <input type="hidden" name="action" value="delete">
                                 <input type="hidden" name="subject_id" value="<?php echo (int)$s['subject_id']; ?>">
                                 <button type="submit" class="icon-btn danger">Delete</button>
                             </form>
                         </div>
-
                     </div>
                 <?php endforeach; ?>
             </div>
 
         <?php endif; ?>
+    </div>
 
+    <!-- =========================================================
+         CLASS ASSIGNMENTS CARD
+    ========================================================= -->
+    <div class="assignments-card">
+        <div class="assignments-card-header">
+            <h2>📋 Subjects Assigned to Each Class</h2>
+            <span class="assignments-count-badge">
+                <?php echo count($class_assignments); ?> class<?php echo count($class_assignments) === 1 ? '' : 'es'; ?>
+            </span>
+        </div>
+
+        <?php if (empty($class_assignments)): ?>
+            <div class="empty" style="padding:40px 20px;">
+                <h3>No classes found</h3>
+                <p>Add classes first, then assign subjects to them.</p>
+            </div>
+        <?php else: ?>
+            <div class="assignments-grid">
+                <?php foreach ($class_assignments as $ca): ?>
+                    <div class="class-assign-card">
+                        <div class="class-assign-header">
+                            <div class="class-assign-name">
+                                <?php echo e($ca['class_name']); ?>
+                            </div>
+                            <div class="class-assign-count">
+                                <?php echo count($ca['subjects']); ?>
+                                subject<?php echo count($ca['subjects']) === 1 ? '' : 's'; ?>
+                            </div>
+                        </div>
+
+                        <?php if (empty($ca['subjects'])): ?>
+                            <div class="class-assign-empty">
+                                No subjects assigned yet.
+                            </div>
+                        <?php else: ?>
+                            <div class="class-assign-subjects">
+                                <?php foreach ($ca['subjects'] as $sub): ?>
+                                    <span class="badge badge-<?php echo e($sub['subject_type']); ?>">
+                                        <?php echo e($sub['subject_name']); ?>
+                                    </span>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
     </div>
 
 </main>
 
+<!-- =========================================================
+     ASSIGN TO CLASSES MODAL
+========================================================= -->
+<div class="modal-backdrop" id="assignModal">
+    <div class="modal" style="max-width:620px;">
+        <form method="POST" action="subjects.php" id="assignForm">
+            <div class="modal-header">
+                <h2>📚 Assign Subjects to Classes</h2>
+                <button type="button" class="modal-close" onclick="closeModal('assignModal')">×</button>
+            </div>
+
+            <div class="modal-body">
+                <!-- Class selector -->
+                <div style="margin-bottom:6px;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;">
+                    Select Classes
+                </div>
+                <div class="assign-class-selector" id="classSelector">
+                    <!-- Populated by JS from PHP data -->
+                </div>
+
+                <!-- Only-new filter -->
+                <div class="assign-filter-toggle">
+                    <label>
+                        <input type="checkbox" id="onlyNewSubjects">
+                        Only show subjects not yet assigned to the selected classes
+                    </label>
+                </div>
+
+                <!-- Subject list -->
+                <div style="margin-bottom:6px;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;">
+                    Select Subjects
+                </div>
+
+                <div class="select-all-bar">
+                    <label>
+                        <input type="checkbox" id="selectAllSubjects">
+                        Select All Subjects
+                    </label>
+                    <span class="selected-count-badge" id="subjectCountBadge">0 selected</span>
+                </div>
+
+                <div class="subject-checkbox-list" id="subjectCheckboxList">
+                    <!-- Populated by JS -->
+                </div>
+
+                <p style="font-size:11px;color:var(--muted);margin-top:10px;">
+                    ✅ Each selected class will be assigned all checked subjects.
+                </p>
+
+                <div id="assignStatusMessage" class="assign-status-message" style="display:none;"></div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost" onclick="closeModal('assignModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary" id="assignSubmitBtn">Assign Subjects</button>
+            </div>
+
+            <div id="hiddenInputsContainer"></div>
+        </form>
+    </div>
+</div>
 
 <!-- =========================================================
      CREATE MODAL
@@ -1307,21 +1840,16 @@ include '../includes/topbar.php';
 <div class="modal-backdrop" id="createModal">
     <div class="modal">
         <form method="POST" action="subjects.php">
-
             <div class="modal-header">
                 <h2>Add Subject</h2>
                 <button type="button" class="modal-close" onclick="closeModal('createModal')">×</button>
             </div>
-
             <div class="modal-body">
                 <div class="form-grid">
-
                     <div class="form-group full">
                         <label>Subject Name <span class="required">*</span></label>
-                        <input type="text" name="subject_name" class="form-control"
-                               maxlength="150" placeholder="e.g. Mathematics" required>
+                        <input type="text" name="subject_name" class="form-control" maxlength="150" placeholder="e.g. Mathematics" required>
                     </div>
-
                     <div class="form-group full">
                         <label>Type</label>
                         <select name="subject_type" class="form-control">
@@ -1332,7 +1860,6 @@ include '../includes/topbar.php';
                             <?php endforeach; ?>
                         </select>
                     </div>
-
                     <div class="form-group full">
                         <label>Status</label>
                         <select name="status" class="form-control">
@@ -1340,24 +1867,16 @@ include '../includes/topbar.php';
                             <option value="inactive">Inactive</option>
                         </select>
                     </div>
-
                 </div>
             </div>
-
             <div class="modal-footer">
-                <button type="button" class="btn btn-ghost" onclick="closeModal('createModal')">
-                    Cancel
-                </button>
-                <button type="submit" class="btn btn-primary">
-                    Create Subject
-                </button>
+                <button type="button" class="btn btn-ghost" onclick="closeModal('createModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Create Subject</button>
             </div>
-
             <input type="hidden" name="action" value="create">
         </form>
     </div>
 </div>
-
 
 <!-- =========================================================
      EDIT MODAL
@@ -1365,32 +1884,24 @@ include '../includes/topbar.php';
 <div class="modal-backdrop" id="editModal">
     <div class="modal">
         <form method="POST" action="subjects.php">
-
             <div class="modal-header">
                 <h2>Edit Subject</h2>
                 <button type="button" class="modal-close" onclick="closeModal('editModal')">×</button>
             </div>
-
             <div class="modal-body">
                 <div class="form-grid">
-
                     <div class="form-group full">
                         <label>Subject Name <span class="required">*</span></label>
-                        <input type="text" name="subject_name" id="edit_subject_name"
-                               class="form-control" maxlength="150" required>
+                        <input type="text" name="subject_name" id="edit_subject_name" class="form-control" maxlength="150" required>
                     </div>
-
                     <div class="form-group full">
                         <label>Type</label>
                         <select name="subject_type" id="edit_subject_type" class="form-control">
                             <?php foreach ($valid_types as $t): ?>
-                                <option value="<?php echo e($t); ?>">
-                                    <?php echo ucfirst(e($t)); ?>
-                                </option>
+                                <option value="<?php echo e($t); ?>"><?php echo ucfirst(e($t)); ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
-
                     <div class="form-group full">
                         <label>Status</label>
                         <select name="status" id="edit_status" class="form-control">
@@ -1398,25 +1909,17 @@ include '../includes/topbar.php';
                             <option value="inactive">Inactive</option>
                         </select>
                     </div>
-
                 </div>
             </div>
-
             <div class="modal-footer">
-                <button type="button" class="btn btn-ghost" onclick="closeModal('editModal')">
-                    Cancel
-                </button>
-                <button type="submit" class="btn btn-primary">
-                    Save Changes
-                </button>
+                <button type="button" class="btn btn-ghost" onclick="closeModal('editModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save Changes</button>
             </div>
-
             <input type="hidden" name="action" value="update">
             <input type="hidden" name="subject_id" id="edit_subject_id">
         </form>
     </div>
 </div>
-
 
 <script>
 /* =========================================================
@@ -1457,7 +1960,6 @@ document.addEventListener('keydown', function (e) {
     }
 });
 
-
 /* =========================================================
    MOBILE DRAWER
    ========================================================= */
@@ -1495,6 +1997,355 @@ if (sidebarOverlay) {
 window.addEventListener('resize', () => {
     if (window.innerWidth > 800) closeSidebar();
 });
+
+/* =========================================================
+   ASSIGN SUBJECTS TO CLASSES
+   ========================================================= */
+
+// All subjects (injected from PHP)
+const allSubjects = <?php echo json_encode($subjects, JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+
+// All classes (from DB)
+const allClasses = <?php echo json_encode($classes, JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+
+// Map: class_id => [subject_id, subject_id, ...] (already assigned)
+const assignmentsMap = <?php echo json_encode($assignments_map, JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+
+let selectedSubjectIds = new Set();
+
+/* --- Open the assign modal (bulk) --- */
+function openAssignModal() {
+    selectedSubjectIds.clear();
+    renderAssignModal();
+    applySubjectVisibilityFilter();
+    document.getElementById('assignModal').classList.add('open');
+    document.body.classList.add('no-scroll');
+}
+
+/* --- Open for a specific subject (pre-select) --- */
+function openAssignForSubject(subjectId, subjectName) {
+    selectedSubjectIds.clear();
+    selectedSubjectIds.add(String(subjectId));
+    renderAssignModal();
+    applySubjectVisibilityFilter();
+    document.querySelector('#assignModal .modal-header h2').textContent =
+        `📚 Assign "${subjectName}" to Classes`;
+    document.getElementById('assignModal').classList.add('open');
+    document.body.classList.add('no-scroll');
+}
+
+/* --- Render the modal content --- */
+function renderAssignModal() {
+    const classContainer = document.getElementById('classSelector');
+    const subjectList    = document.getElementById('subjectCheckboxList');
+
+    if (selectedSubjectIds.size <= 1) {
+        document.querySelector('#assignModal .modal-header h2').textContent =
+            '📚 Assign Subjects to Classes';
+    }
+
+    /* ---- Classes ---- */
+    classContainer.innerHTML = '';
+
+    if (allClasses.length === 0) {
+        classContainer.innerHTML =
+            '<div class="assign-empty" style="width:100%;">No classes found in the database. Please add classes first.</div>';
+    } else {
+        allClasses.forEach(cls => {
+            const label = document.createElement('label');
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.value = cls.id;
+            cb.name = 'class_ids[]';
+            cb.dataset.classId = cls.id;
+
+            cb.addEventListener('change', function () {
+                label.classList.toggle('checked', this.checked);
+                // Re-evaluate the "only new" filter whenever classes change
+                applySubjectVisibilityFilter();
+            });
+
+            label.appendChild(cb);
+            label.appendChild(document.createTextNode(' ' + cls.name));
+            classContainer.appendChild(label);
+        });
+    }
+
+    /* ---- Subjects ---- */
+    subjectList.innerHTML = '';
+
+    if (allSubjects.length === 0) {
+        subjectList.innerHTML =
+            '<div class="assign-empty">No subjects available. Add subjects first.</div>';
+        document.getElementById('assignSubmitBtn').disabled = true;
+    } else {
+        document.getElementById('assignSubmitBtn').disabled = false;
+
+        allSubjects.forEach(sub => {
+            const item = document.createElement('label');
+            item.className = 'subject-checkbox-item';
+            item.dataset.subjectId = sub.subject_id;
+
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.value = sub.subject_id;
+            cb.dataset.subjectId = sub.subject_id;
+
+            if (selectedSubjectIds.has(String(sub.subject_id))) {
+                cb.checked = true;
+            }
+
+            cb.addEventListener('change', function () {
+                if (this.checked) selectedSubjectIds.add(this.value);
+                else selectedSubjectIds.delete(this.value);
+                updateSubjectCountBadge();
+                updateSelectAllCheckbox();
+            });
+
+            const info = document.createElement('div');
+            info.className = 'sub-info';
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'sub-name';
+            nameSpan.textContent = sub.subject_name;
+
+            const typeSpan = document.createElement('span');
+            typeSpan.className = 'sub-type';
+            typeSpan.textContent = sub.subject_type;
+
+            info.appendChild(nameSpan);
+            info.appendChild(typeSpan);
+
+            item.appendChild(cb);
+            item.appendChild(info);
+            subjectList.appendChild(item);
+        });
+    }
+
+    updateSubjectCountBadge();
+    updateSelectAllCheckbox();
+    bindSelectAll();
+    bindOnlyNewToggle();
+}
+
+/* --- Show/hide subjects based on the "only new" toggle --- */
+function applySubjectVisibilityFilter() {
+    const onlyNew = document.getElementById('onlyNewSubjects');
+    if (!onlyNew) return;
+
+    const selectedClasses = Array.from(
+        document.querySelectorAll('#classSelector input[type="checkbox"]:checked')
+    ).map(cb => String(cb.value));
+
+    const items = document.querySelectorAll('#subjectCheckboxList .subject-checkbox-item');
+
+    items.forEach(item => {
+        const sid = String(item.dataset.subjectId);
+
+        // If the toggle is OFF → always show
+        if (!onlyNew.checked) {
+            item.classList.remove('assign-hidden');
+            return;
+        }
+
+        // If toggle is ON but no class selected → show all (nothing to hide against)
+        if (selectedClasses.length === 0) {
+            item.classList.remove('assign-hidden');
+            return;
+        }
+
+        // "Only new" = NOT already assigned to any of the currently selected classes
+        const alreadyAssigned = selectedClasses.some(cid => {
+            const list = assignmentsMap[cid] || [];
+            return list.map(String).includes(sid);
+        });
+
+        if (alreadyAssigned) {
+            item.classList.add('assign-hidden');
+        } else {
+            item.classList.remove('assign-hidden');
+        }
+    });
+
+    updateSubjectCountBadge();
+    updateSelectAllCheckbox();
+}
+
+/* --- Bind the "only new" checkbox (once) --- */
+function bindOnlyNewToggle() {
+    const cb = document.getElementById('onlyNewSubjects');
+    if (!cb || cb.dataset.bound === '1') return;
+    cb.dataset.bound = '1';
+    cb.addEventListener('change', applySubjectVisibilityFilter);
+}
+
+/* --- Bind the "select all" checkbox --- */
+function bindSelectAll() {
+    const selectAllCb = document.getElementById('selectAllSubjects');
+    if (!selectAllCb) return;
+
+    // Replace to drop old listeners
+    const newSelectAll = selectAllCb.cloneNode(true);
+    selectAllCb.parentNode.replaceChild(newSelectAll, selectAllCb);
+
+    newSelectAll.addEventListener('change', function () {
+        // Only affect VISIBLE items
+        const visibleCheckboxes = document.querySelectorAll(
+            '#subjectCheckboxList .subject-checkbox-item:not(.assign-hidden) input[type="checkbox"]'
+        );
+
+        if (this.checked) {
+            visibleCheckboxes.forEach(cb => {
+                cb.checked = true;
+                selectedSubjectIds.add(cb.value);
+            });
+        } else {
+            visibleCheckboxes.forEach(cb => {
+                cb.checked = false;
+                selectedSubjectIds.delete(cb.value);
+            });
+        }
+        updateSubjectCountBadge();
+    });
+}
+
+/* --- Count badge --- */
+function updateSubjectCountBadge() {
+    const badge = document.getElementById('subjectCountBadge');
+    if (badge) badge.textContent = selectedSubjectIds.size + ' selected';
+}
+
+/* --- Sync Select All state with visible items --- */
+function updateSelectAllCheckbox() {
+    const selectAll = document.getElementById('selectAllSubjects');
+    if (!selectAll) return;
+
+    const visible = document.querySelectorAll(
+        '#subjectCheckboxList .subject-checkbox-item:not(.assign-hidden) input[type="checkbox"]'
+    );
+
+    if (visible.length === 0) {
+        selectAll.checked = false;
+        selectAll.disabled = true;
+        return;
+    }
+
+    selectAll.disabled = false;
+    selectAll.checked = Array.from(visible).every(cb => cb.checked);
+}
+
+/* --- AJAX submit --- */
+document.getElementById('assignForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+
+    const submitBtn  = document.getElementById('assignSubmitBtn');
+    const classIds   = Array.from(
+        document.querySelectorAll('#classSelector input[type="checkbox"]:checked')
+    ).map(cb => cb.value);
+    const subjectIds = Array.from(selectedSubjectIds);
+
+    if (classIds.length === 0) {
+        showAssignMessage('Please select at least one class.', 'error');
+        return;
+    }
+    if (subjectIds.length === 0) {
+        showAssignMessage('Please select at least one subject.', 'error');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('ajax_action', 'assign_subjects');
+    classIds.forEach(id => formData.append('class_ids[]', id));
+    subjectIds.forEach(id => formData.append('subject_ids[]', id));
+
+    const originalText = submitBtn.innerHTML;
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '⏳ Assigning...';
+
+    try {
+        const response = await fetch('subjects.php', {
+            method: 'POST',
+            body: formData,
+            credentials: 'same-origin',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+
+        const rawText = await response.text();
+        let data;
+        try {
+            data = JSON.parse(rawText);
+        } catch (err) {
+            console.error(rawText);
+            throw new Error('The server returned an unexpected response. Check the PHP error log.');
+        }
+
+        if (!response.ok || !data.success) {
+            throw new Error(data.message || 'Could not assign the subjects.');
+        }
+
+        showAssignMessage(data.message || 'Subjects assigned successfully.', 'success');
+
+        setTimeout(() => {
+            closeModal('assignModal');
+            // Reload so the assignments card refreshes
+            window.location.reload();
+        }, 900);
+    } catch (error) {
+        console.error('Subject assignment error:', error);
+        showAssignMessage(error.message || 'An unexpected error occurred.', 'error');
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = originalText;
+    }
+});
+
+function showAssignMessage(message, type) {
+    const box = document.getElementById('assignStatusMessage');
+    if (!box) return;
+    box.textContent = message;
+    box.className = 'assign-status-message ' + (type === 'success' ? 'success' : 'error');
+    box.style.display = 'block';
+}
+
+/* --- Reset when modal closes --- */
+document.getElementById('assignModal').addEventListener('click', function (e) {
+    if (e.target === this) {
+        closeModal('assignModal');
+        resetAssignModal();
+    }
+});
+
+function resetAssignModal() {
+    selectedSubjectIds.clear();
+    document.getElementById('hiddenInputsContainer').innerHTML = '';
+
+    const statusBox = document.getElementById('assignStatusMessage');
+    if (statusBox) {
+        statusBox.textContent = '';
+        statusBox.className = 'assign-status-message';
+        statusBox.style.display = 'none';
+    }
+
+    const onlyNew = document.getElementById('onlyNewSubjects');
+    if (onlyNew) onlyNew.checked = false;
+
+    document.querySelector('#assignModal .modal-header h2').textContent =
+        '📚 Assign Subjects to Classes';
+
+    document.querySelectorAll('#classSelector input[type="checkbox"]').forEach(cb => {
+        cb.checked = false;
+        cb.closest('label').classList.remove('checked');
+    });
+    document.querySelectorAll('#subjectCheckboxList input[type="checkbox"]').forEach(cb => {
+        cb.checked = false;
+    });
+    document.querySelectorAll('#subjectCheckboxList .subject-checkbox-item').forEach(i => {
+        i.classList.remove('assign-hidden');
+    });
+
+    updateSubjectCountBadge();
+    updateSelectAllCheckbox();
+}
 </script>
 
 </body>

@@ -465,10 +465,7 @@ if ($is_headteacher) {
          STATS
     ========================================================== -->
     <div class="stats-grid">
-        <div class="stat-card">
-            <div class="label">Employee No</div>
-            <div class="value"><?php echo htmlspecialchars($me['employee_no'] ?? '—', ENT_QUOTES, 'UTF-8'); ?></div>
-        </div>
+        
 
         <div class="stat-card">
             <div class="label">Specialization</div>
@@ -501,44 +498,6 @@ if ($is_headteacher) {
                 </div>
             </div>
         <?php endif; ?>
-    </div>
-
-
-    <!-- =========================================================
-         PROFILE (everyone sees)
-    ========================================================== -->
-    <div class="section-card">
-        <div class="section-card-header">
-            <h2>My Profile</h2>
-        </div>
-        <div class="section-card-body">
-            <div class="profile-grid">
-                <div class="profile-item">
-                    <div class="label">Full Name</div>
-                    <div class="value"><?php echo htmlspecialchars($full_name, ENT_QUOTES, 'UTF-8'); ?></div>
-                </div>
-                <div class="profile-item">
-                    <div class="label">Gender</div>
-                    <div class="value"><?php echo htmlspecialchars(ucfirst($me['gender'] ?? '—'), ENT_QUOTES, 'UTF-8'); ?></div>
-                </div>
-                <div class="profile-item">
-                    <div class="label">Email</div>
-                    <div class="value"><?php echo htmlspecialchars($me['email'], ENT_QUOTES, 'UTF-8'); ?></div>
-                </div>
-                <div class="profile-item">
-                    <div class="label">Phone</div>
-                    <div class="value"><?php echo htmlspecialchars($me['phone'] ?: '—', ENT_QUOTES, 'UTF-8'); ?></div>
-                </div>
-                <div class="profile-item">
-                    <div class="label">Qualification</div>
-                    <div class="value"><?php echo htmlspecialchars($me['qualification'] ?: '—', ENT_QUOTES, 'UTF-8'); ?></div>
-                </div>
-                <div class="profile-item">
-                    <div class="label">Assignment</div>
-                    <div class="value"><?php echo htmlspecialchars($role_label, ENT_QUOTES, 'UTF-8'); ?></div>
-                </div>
-            </div>
-        </div>
     </div>
 
 

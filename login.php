@@ -347,62 +347,76 @@ if (file_exists('includes/db.php')) {
         </div>
     <?php endif; ?>
 
-    <!-- FORM -->
-    <form action="auth/login_process.php" method="POST" autocomplete="on">
+  <!-- FORM -->
+<form action="auth/login_process.php" method="POST" autocomplete="on">
 
-        <div class="form-group">
-            <label for="email">Email Address</label>
-            <div class="input-wrapper">
-                <span class="input-icon">@</span>
-                <input
-                    type="email"
-                    id="email"
-                    name="email"
-                    class="form-control"
-                    placeholder="you@example.com"
-                    autocomplete="email"
-                    inputmode="email"
-                    required
-                >
-            </div>
+    <div class="form-group">
+        <label for="identifier">Phone Number or Email</label>
+
+        <div class="input-wrapper">
+            <span class="input-icon">☎</span>
+
+            <input
+                type="text"
+                id="identifier"
+                name="identifier"
+                class="form-control"
+                placeholder="Phone number or email"
+                autocomplete="username"
+                required
+            >
         </div>
+    </div>
 
-        <div class="form-group">
-            <label for="password">Password</label>
-            <div class="input-wrapper">
-                <span class="input-icon">•</span>
-                <input
-                    type="password"
-                    id="password"
-                    name="password"
-                    class="form-control"
-                    placeholder="Enter your password"
-                    autocomplete="current-password"
-                    required
-                >
-                <button
-                    type="button"
-                    class="password-toggle"
-                    onclick="togglePassword(this)"
-                >
-                    SHOW
-                </button>
-            </div>
+
+    <div class="form-group">
+        <label for="password">Password</label>
+
+        <div class="input-wrapper">
+
+            <span class="input-icon">•</span>
+
+            <input
+                type="password"
+                id="password"
+                name="password"
+                class="form-control"
+                placeholder="Enter your password"
+                autocomplete="current-password"
+                required
+            >
+
+            <button
+                type="button"
+                class="password-toggle"
+                onclick="togglePassword(this)"
+            >
+                SHOW
+            </button>
+
         </div>
+    </div>
 
-        <div class="form-options">
-            <label class="remember">
-                <input type="checkbox" name="remember">
-                Remember me
-            </label>
-            <a href="#" class="forgot">Forgot?</a>
-        </div>
 
-        <button type="submit" class="login-button">
-            Sign In
-        </button>
+    <div class="form-options">
 
-    </form>
+        <label class="remember">
+            <input type="checkbox" name="remember">
+            Remember me
+        </label>
+
+        <a href="#" class="forgot">
+            Forgot?
+        </a>
+
+    </div>
+
+
+    <button type="submit" class="login-button">
+        Sign In
+    </button>
+
+</form>
 
     <div class="security-note">
         Your login is protected. Do not share your credentials.

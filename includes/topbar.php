@@ -67,30 +67,50 @@ $topbar_role_label = [
 
 $topbar_subtitle = $topbar_subtitle ?? $topbar_role_label;
 
-$topbar_photo_url = $topbar_photo
-    ? '../uploads/users/' . htmlspecialchars($topbar_photo, ENT_QUOTES, 'UTF-8')
-    : '';
+
+/* =========================================================================
+   SHARED PROFILE URL
+   The profile page lives at the project root: /PSRMS/profile.php
+   This resolves correctly from any folder depth (admin/, teacher/, parent/).
+   ========================================================================= */
 
 $script_path = $_SERVER['PHP_SELF'] ?? '';
-$is_admin    = strpos($script_path, '/admin/')   !== false;
-$is_teacher  = strpos($script_path, '/teacher/') !== false;
-$is_parent   = strpos($script_path, '/parent/')  !== false;
 
-if ($is_admin) {
-    $profile_url = 'settings.php';
-} elseif ($is_teacher || $is_parent) {
-    $profile_url = 'profile.php';
+$project_folder = 'PSRMS';                       // ← adjust if your folder differs
+$parts          = explode('/', trim($script_path, '/'));
+$root_index     = array_search($project_folder, $parts, true);
+
+if ($root_index !== false) {
+    $project_root = '/' . implode('/', array_slice($parts, 0, $root_index + 1));
+    $profile_url  = $project_root . '/profile.php';
+    $logout_url   = $project_root . '/auth/logout.php';
 } else {
-    $profile_url = 'settings.php';
+    $profile_url = '../profile.php';
+    $logout_url  = '../auth/logout.php';
 }
 
-$logout_url = '../auth/logout.php';
+
+/* =========================================================================
+   PROFILE PHOTO URL
+   For avatar preview in topbar — always relative to root/uploads/users/
+   ========================================================================= */
+
+$topbar_photo_url = '';
+if ($topbar_photo) {
+    // Build the same project root path used for profile_url
+    if ($root_index !== false) {
+        $topbar_photo_url = $project_root . '/uploads/users/' .
+            htmlspecialchars($topbar_photo, ENT_QUOTES, 'UTF-8');
+    } else {
+        $topbar_photo_url = '../uploads/users/' .
+            htmlspecialchars($topbar_photo, ENT_QUOTES, 'UTF-8');
+    }
+}
 
 ?>
 <style>
     /* =========================================================
        CSS VARIABLES
-       Adjust to match your sidebar widths if you change them.
     ========================================================= */
     :root {
         --topbar-h: 64px;
@@ -103,9 +123,7 @@ $logout_url = '../auth/logout.php';
         --topbar-text: #263044;
     }
 
-    /* =========================================================
-       TOPBAR
-    ========================================================= */
+    /* TOPBAR */
     .app-topbar {
         position: fixed;
         top: 0;
@@ -128,16 +146,13 @@ $logout_url = '../auth/logout.php';
         transition: left .25s ease;
     }
 
-    /* Follow collapsed sidebar on desktop */
     @media (min-width: 801px) {
         body.sidebar-collapsed .app-topbar {
             left: var(--topbar-sidebar-collapsed);
         }
     }
 
-    /* =========================================================
-       LEFT
-    ========================================================= */
+    /* LEFT */
     .app-topbar-left {
         display: flex;
         align-items: center;
@@ -170,9 +185,7 @@ $logout_url = '../auth/logout.php';
         text-overflow: ellipsis;
     }
 
-    /* =========================================================
-       HAMBURGER (mobile only)
-    ========================================================= */
+    /* HAMBURGER */
     .app-hamburger {
         display: none;
         width: 40px;
@@ -195,9 +208,7 @@ $logout_url = '../auth/logout.php';
         transition: background .15s ease;
     }
 
-    .app-hamburger:active {
-        background: #0b1220;
-    }
+    .app-hamburger:active { background: #0b1220; }
 
     .app-hamburger span {
         display: block;
@@ -212,9 +223,7 @@ $logout_url = '../auth/logout.php';
     .app-hamburger.active span:nth-child(2) { opacity: 0; }
     .app-hamburger.active span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
 
-    /* =========================================================
-       RIGHT
-    ========================================================= */
+    /* RIGHT */
     .app-topbar-right {
         display: flex;
         align-items: center;
@@ -222,9 +231,7 @@ $logout_url = '../auth/logout.php';
         flex-shrink: 0;
     }
 
-    .app-user {
-        position: relative;
-    }
+    .app-user { position: relative; }
 
     .app-user-btn {
         display: flex;
@@ -249,9 +256,7 @@ $logout_url = '../auth/logout.php';
         border-color: var(--topbar-border);
     }
 
-    .app-user-btn:active {
-        background: #eef0f3;
-    }
+    .app-user-btn:active { background: #eef0f3; }
 
     .app-user-avatar {
         width: 36px;
@@ -314,9 +319,7 @@ $logout_url = '../auth/logout.php';
         transform: rotate(180deg);
     }
 
-    /* =========================================================
-       DROPDOWN
-    ========================================================= */
+    /* DROPDOWN */
     .app-user-menu {
         position: absolute;
         top: calc(100% + 8px);
@@ -415,9 +418,7 @@ $logout_url = '../auth/logout.php';
         color: #9b4747;
     }
 
-    /* =========================================================
-       OVERLAY (mobile drawer backdrop)
-    ========================================================= */
+    /* OVERLAY */
     .sidebar-overlay {
         display: none;
         position: fixed;
@@ -437,24 +438,17 @@ $logout_url = '../auth/logout.php';
         .sidebar-overlay { display: none !important; }
     }
 
-    /* =========================================================
-       CONTENT PADDING HELPER
-       Use .main-content.with-topbar on your page wrapper.
-    ========================================================= */
+    /* CONTENT PADDING */
     @media (min-width: 801px) {
         .main-content.with-topbar {
             padding-top: calc(var(--topbar-h) + 30px);
         }
     }
 
-    /* =========================================================
-       MOBILE — drawer mode
-    ========================================================= */
+    /* MOBILE */
     @media (max-width: 800px) {
 
-        :root {
-            --topbar-h: 58px;
-        }
+        :root { --topbar-h: 58px; }
 
         .app-topbar {
             left: 0;
@@ -462,12 +456,10 @@ $logout_url = '../auth/logout.php';
             padding: 0 12px;
             transition: none;
 
-            /* Respect iPhone notch */
             padding-left:  max(12px, env(safe-area-inset-left));
             padding-right: max(12px, env(safe-area-inset-right));
         }
 
-        /* Cancel the collapsed-slide on mobile */
         body.sidebar-collapsed .app-topbar { left: 0; }
 
         .app-hamburger { display: flex; }
@@ -488,27 +480,23 @@ $logout_url = '../auth/logout.php';
             font-size: 11px;
         }
 
-        /* Dropdown can't overflow the screen edge */
         .app-user-menu {
             right: 0;
             min-width: 200px;
             max-width: calc(100vw - 20px);
         }
 
-        /* Bigger tap targets */
         .app-user-menu a,
         .app-user-menu button {
             padding: 13px 12px;
             font-size: 13px;
         }
 
-        /* Push content below topbar */
         .main-content.with-topbar {
             padding-top: calc(var(--topbar-h) + 16px);
         }
     }
 
-    /* Small phones */
     @media (max-width: 400px) {
         .app-topbar-title { font-size: 12.5px; }
 
@@ -520,7 +508,6 @@ $logout_url = '../auth/logout.php';
         }
     }
 
-    /* Landscape phones */
     @media (max-height: 500px) and (max-width: 900px) {
         :root { --topbar-h: 52px; }
 
@@ -620,14 +607,6 @@ $logout_url = '../auth/logout.php';
                     My Profile
                 </a>
 
-                <a href="settings.php">
-                    <svg class="menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                        <circle cx="12" cy="12" r="3"/>
-                        <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
-                    </svg>
-                    Settings
-                </a>
-
                 <div class="menu-divider"></div>
 
                 <a href="<?php echo htmlspecialchars($logout_url, ENT_QUOTES, 'UTF-8'); ?>" class="logout-item">
@@ -650,9 +629,7 @@ $logout_url = '../auth/logout.php';
 (function () {
     "use strict";
 
-    /* =========================================================
-       USER DROPDOWN
-    ========================================================= */
+    /* USER DROPDOWN */
     const userBtn  = document.getElementById('appUserBtn');
     const userMenu = document.getElementById('appUserMenu');
     const userWrap = document.getElementById('appUserMenuWrap');
@@ -670,20 +647,16 @@ $logout_url = '../auth/logout.php';
             userBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
         });
 
-        /* Click outside */
         document.addEventListener('click', function (e) {
             if (userWrap && !userWrap.contains(e.target)) closeUserMenu();
         });
 
-        /* Escape */
         document.addEventListener('keydown', function (e) {
             if (e.key === 'Escape') closeUserMenu();
         });
     }
 
-    /* =========================================================
-       MOBILE DRAWER SIDEBAR
-    ========================================================= */
+    /* MOBILE DRAWER */
     const hamburger = document.getElementById('appHamburgerBtn');
     const overlay   = document.getElementById('sidebarOverlay');
 
@@ -715,7 +688,6 @@ $logout_url = '../auth/logout.php';
             hamburger.classList.remove('active');
             hamburger.setAttribute('aria-expanded', 'false');
         }
-        // Only unlock scroll if no modal is open
         if (!document.querySelector('.modal-backdrop.open')) {
             document.body.classList.remove('no-scroll');
         }
@@ -735,7 +707,6 @@ $logout_url = '../auth/logout.php';
         overlay.addEventListener('click', closeSidebar);
     }
 
-    /* Close drawer when a sidebar link is tapped (mobile only) */
     document.querySelectorAll(
         '.sidebar .nav-item, .admin-sidebar a, .teacher-sidebar a'
     ).forEach(function (link) {
@@ -744,7 +715,6 @@ $logout_url = '../auth/logout.php';
         });
     });
 
-    /* Auto-close when resizing to desktop */
     let resizeTimer = null;
     window.addEventListener('resize', function () {
         clearTimeout(resizeTimer);
@@ -753,7 +723,6 @@ $logout_url = '../auth/logout.php';
         }, 120);
     });
 
-    /* Expose helpers for pages that want to call them */
     window.openTopbarSidebar  = openSidebar;
     window.closeTopbarSidebar = closeSidebar;
 })();
