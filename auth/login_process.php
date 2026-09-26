@@ -47,18 +47,6 @@ if ($identifier === '') {
 |--------------------------------------------------------------------------
 | Find user by email OR phone
 |--------------------------------------------------------------------------
-|
-| We intentionally search by both.
-|
-| Example:
-|
-| Email:
-| parent@example.com
-|
-| Phone:
-| 0712345678
-|
-|--------------------------------------------------------------------------
 */
 
 $sql = "SELECT
@@ -119,15 +107,6 @@ mysqli_stmt_close($stmt);
 
 if (!$user) {
 
-    /*
-    |--------------------------------------------------------------------------
-    | Generic message
-    |--------------------------------------------------------------------------
-    |
-    | We don't reveal whether an email/phone exists.
-    |
-    */
-
     $_SESSION['login_error'] =
         "Invalid phone number/email or password.";
 
@@ -152,22 +131,7 @@ if (
     $user['status'] !== 'active'
 ) {
 
-    /*
-    |--------------------------------------------------------------------------
-    | Store temporary information for activation page
-    |--------------------------------------------------------------------------
-    |
-    | We do NOT log the parent in.
-    |
-    */
-
     $_SESSION['activation_user_id'] = $user['user_id'];
-
-    /*
-    |--------------------------------------------------------------------------
-    | Redirect to activation page
-    |--------------------------------------------------------------------------
-    */
 
     header("Location: ../parent/activate.php");
     exit;
@@ -177,10 +141,6 @@ if (
 /*
 |--------------------------------------------------------------------------
 | Other inactive accounts
-|--------------------------------------------------------------------------
-|
-| Admin/teacher/etc. should not be allowed to login while inactive.
-|
 |--------------------------------------------------------------------------
 */
 
@@ -230,10 +190,6 @@ if (!password_verify($password, $user['password'])) {
 |--------------------------------------------------------------------------
 | Regenerate session ID
 |--------------------------------------------------------------------------
-|
-| Prevents session fixation.
-|
-|--------------------------------------------------------------------------
 */
 
 session_regenerate_id(true);
@@ -258,19 +214,19 @@ $full_name = trim(
 |--------------------------------------------------------------------------
 */
 
-$_SESSION['logged_in']  = true;
+$_SESSION['logged_in']   = true;
 
-$_SESSION['user_id']    = $user['user_id'];
+$_SESSION['user_id']     = $user['user_id'];
 
-$_SESSION['full_name']  = $full_name;
+$_SESSION['full_name']   = $full_name;
 
-$_SESSION['email']      = $user['email'];
+$_SESSION['email']       = $user['email'];
 
-$_SESSION['role']       = $user['role'];
+$_SESSION['role']        = $user['role'];
 
-$_SESSION['gender']     = $user['gender'];
+$_SESSION['gender']      = $user['gender'];
 
-$_SESSION['phone']      = $user['phone'];
+$_SESSION['phone']       = $user['phone'];
 
 $_SESSION['profile_pic'] = $user['profile_pic'];
 
@@ -283,37 +239,55 @@ $_SESSION['profile_pic'] = $user['profile_pic'];
 
 switch ($user['role']) {
 
+    /* =====================================================================
+       SUPER ADMIN — system console
+       ===================================================================== */
+    case 'super_admin':
+
+        header("Location: ../superAdmin/dashboard.php");
+        exit;
+
+
+    /* =====================================================================
+       ADMIN — school administration
+       ===================================================================== */
     case 'admin':
 
         header("Location: ../admin/dashboard.php");
         exit;
 
 
-    case 'teacher':
-
-        header("Location: ../teacher/dashboard.php");
-        exit;
-
-
+    /* =====================================================================
+       ACADEMIC MASTER
+       ===================================================================== */
     case 'academic':
 
         header("Location: ../academic/dashboard.php");
         exit;
 
 
+    /* =====================================================================
+       TEACHER
+       ===================================================================== */
+    case 'teacher':
+
+        header("Location: ../teacher/dashboard.php");
+        exit;
+
+
+    /* =====================================================================
+       PARENT
+       ===================================================================== */
     case 'parent':
 
         header("Location: ../parent/dashboard.php");
         exit;
 
 
+    /* =====================================================================
+       UNKNOWN ROLE — fail safe
+       ===================================================================== */
     default:
-
-        /*
-        |--------------------------------------------------------------------------
-        | Invalid role
-        |--------------------------------------------------------------------------
-        */
 
         session_unset();
         session_destroy();

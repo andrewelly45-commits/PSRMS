@@ -41,15 +41,18 @@ function columnExists(mysqli $conn, string $table, string $column): bool {
 
 
 /* =========================================================================
-   ROLE DETECTION
+   ROLE DETECTION + SIDEBAR MAP
    ========================================================================= */
 
 $role = strtolower($_SESSION['role'] ?? $_SESSION['user_role'] ?? 'parent');
 
+/* One entry per role — remove any you don't have yet */
 $sidebar_map = [
-    'admin'   => 'admin/admin_sidebar.php',
-    'teacher' => 'teacher/teacher_sidebar.php',
-    'parent'  => 'parent/parent_sidebar.php',
+    'super_admin' => 'superAdmin/superadmin_sidebar.php',
+    'admin'       => 'admin/admin_sidebar.php',
+    'academic'    => 'academic/academic_sidebar.php',
+    'teacher'     => 'teacher/teacher_sidebar.php',
+    'parent'      => 'parent/parent_sidebar.php',
 ];
 
 
@@ -425,7 +428,19 @@ $member_since = !empty($user['created_at'])
     ? date('F Y', strtotime($user['created_at']))
     : '—';
 
-$role_label   = ucfirst($role);
+
+/* =========================================================================
+   ROLE LABEL + STATUS
+   ========================================================================= */
+
+$role_label = [
+    'super_admin' => 'Super Admin',
+    'admin'       => 'Admin',
+    'academic'    => 'Academic Master',
+    'teacher'     => 'Teacher',
+    'parent'      => 'Parent',
+][$role] ?? ucfirst($role);
+
 $status_lower = strtolower($user['status'] ?? 'active');
 
 ?>
@@ -489,7 +504,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             body.sidebar-collapsed .main-content { margin-left: 78px; }
         }
 
-        /* ============ PAGE HEADER ============ */
+        /* PAGE HEADER */
         .page-header {
             display: flex;
             align-items: flex-start;
@@ -533,7 +548,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             white-space: nowrap;
         }
 
-        /* ============ LAYOUT ============ */
+        /* LAYOUT */
         .profile-layout {
             display: grid;
             grid-template-columns: 320px 1fr;
@@ -541,7 +556,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             align-items: start;
         }
 
-        /* ============ PROFILE CARD ============ */
+        /* PROFILE CARD */
         .profile-card {
             background: var(--white);
             border: 1px solid var(--border);
@@ -742,7 +757,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             overflow-wrap: anywhere;
         }
 
-        /* ============ TABS ============ */
+        /* TABS */
         .tabs-card {
             background: var(--white);
             border: 1px solid var(--border);
@@ -801,7 +816,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
 
         .tab-pane.active { display: block; }
 
-        /* ============ FORM ============ */
+        /* FORM */
         .form-section-title {
             display: flex;
             align-items: center;
@@ -906,7 +921,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             border-top: 1px solid var(--border);
         }
 
-        /* ============ BUTTONS ============ */
+        /* BUTTONS */
         .btn {
             display: inline-flex;
             align-items: center;
@@ -956,7 +971,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
 
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* ============ PASSWORD STRENGTH ============ */
+        /* PASSWORD STRENGTH */
         .pwd-strength {
             margin-top: 8px;
             height: 5px;
@@ -980,7 +995,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             font-weight: 600;
         }
 
-        /* ============ INFO NOTE ============ */
+        /* INFO NOTE */
         .info-note {
             background: #f4f8fc;
             border: 1px solid #d5e4f0;
@@ -997,7 +1012,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
 
         .info-note i { margin-top: 2px; font-size: 14px; flex-shrink: 0; }
 
-        /* ============ PHOTO TAB ============ */
+        /* PHOTO TAB */
         .photo-upload-area {
             text-align: center;
             padding: 20px 0;
@@ -1049,7 +1064,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             line-height: 1.55;
         }
 
-        /* ============ TOASTS ============ */
+        /* TOASTS */
         .toast-wrap {
             position: fixed;
             top: 20px;
@@ -1089,17 +1104,13 @@ $status_lower = strtolower($user['status'] ?? 'active');
             to   { transform: translateX(0);    opacity: 1; }
         }
 
-        /* =========================================================
-           RESPONSIVE — TABLET (≤1000px)
-        ========================================================= */
+        /* RESPONSIVE — TABLET */
         @media (max-width: 1000px) {
             .profile-layout { grid-template-columns: 1fr; }
             .profile-card { position: static; }
         }
 
-        /* =========================================================
-           RESPONSIVE — MOBILE (≤800px)
-        ========================================================= */
+        /* RESPONSIVE — MOBILE */
         @media (max-width: 800px) {
 
             .main-content {
@@ -1219,9 +1230,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             }
         }
 
-        /* =========================================================
-           RESPONSIVE — SMALL MOBILE (≤550px)
-        ========================================================= */
+        /* RESPONSIVE — SMALL MOBILE */
         @media (max-width: 550px) {
 
             .main-content { padding: calc(var(--topbar-h) + 14px) 14px 24px; }
@@ -1271,9 +1280,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             .toast { min-width: auto; max-width: 100%; }
         }
 
-        /* =========================================================
-           RESPONSIVE — VERY SMALL (≤380px)
-        ========================================================= */
+        /* RESPONSIVE — VERY SMALL */
         @media (max-width: 380px) {
             .page-title h1 { font-size: 17px; }
 
@@ -1291,9 +1298,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             .tab-pane { padding: 14px; }
         }
 
-        /* =========================================================
-           SAFE-AREA INSETS
-        ========================================================= */
+        /* SAFE-AREA INSETS */
         @media (max-width: 800px) {
             @supports (padding: max(0px)) {
                 .main-content {
@@ -1309,9 +1314,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             }
         }
 
-        /* =========================================================
-           LANDSCAPE PHONES
-        ========================================================= */
+        /* LANDSCAPE PHONES */
         @media (max-height: 500px) and (max-width: 900px) {
             .profile-cover { height: 56px; }
             .profile-avatar-wrap { margin-top: -34px; }
@@ -1327,9 +1330,7 @@ $status_lower = strtolower($user['status'] ?? 'active');
             .tab-pane { padding: 16px; }
         }
 
-        /* =========================================================
-           REDUCED MOTION
-        ========================================================= */
+        /* REDUCED MOTION */
         @media (prefers-reduced-motion: reduce) {
             * {
                 animation-duration: .01ms !important;
@@ -1677,9 +1678,7 @@ if (is_file(__DIR__ . '/' . $sidebar_file)) {
 
 
 <script>
-/* =========================================================================
-   TOASTS
-   ========================================================================= */
+/* TOASTS */
 function showToast(message, type = 'success', timeout = 3200) {
     const wrap = document.getElementById('toastWrap');
     const el = document.createElement('div');
@@ -1697,10 +1696,7 @@ function showToast(message, type = 'success', timeout = 3200) {
     }, timeout);
 }
 
-
-/* =========================================================================
-   TABS
-   ========================================================================= */
+/* TABS */
 document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
         const target = btn.dataset.tab;
@@ -1711,10 +1707,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     });
 });
 
-
-/* =========================================================================
-   FORM ERROR HELPERS
-   ========================================================================= */
+/* ERROR HELPERS */
 function clearErrors(form) {
     form.querySelectorAll('.form-control').forEach(el => el.classList.remove('error'));
     form.querySelectorAll('.field-error').forEach(el => {
@@ -1735,10 +1728,7 @@ function showErrors(form, errors) {
     });
 }
 
-
-/* =========================================================================
-   SAVE PROFILE
-   ========================================================================= */
+/* SAVE PROFILE */
 const profileForm = document.getElementById('profileForm');
 const saveProfileBtn = document.getElementById('saveProfileBtn');
 
@@ -1789,10 +1779,7 @@ profileForm.addEventListener('submit', async e => {
     }
 });
 
-
-/* =========================================================================
-   CHANGE PASSWORD
-   ========================================================================= */
+/* CHANGE PASSWORD */
 const passwordForm = document.getElementById('passwordForm');
 const savePasswordBtn = document.getElementById('savePasswordBtn');
 const newPwdInput = document.getElementById('new_password');
@@ -1864,10 +1851,7 @@ passwordForm.addEventListener('submit', async e => {
     }
 });
 
-
-/* =========================================================================
-   PHOTO UPLOAD
-   ========================================================================= */
+/* PHOTO UPLOAD */
 function handlePhotoUpload(inputEl) {
     if (!inputEl.files || !inputEl.files[0]) return;
     const file = inputEl.files[0];
@@ -1933,11 +1917,8 @@ function handlePhotoUpload(inputEl) {
 document.getElementById('photoInput').addEventListener('change', function () { handlePhotoUpload(this); });
 document.getElementById('photoInput2').addEventListener('change', function () { handlePhotoUpload(this); });
 
-/* =========================================================================
-   NOTE: The mobile sidebar / hamburger behaviour is handled inside
-   includes/topbar.php. Do NOT add another listener here — doing so
-   causes the drawer to open and immediately close (double listeners).
-   ========================================================================= */
+/* NOTE: mobile sidebar / hamburger is handled inside includes/topbar.php.
+   Do NOT add another listener here — that causes double-fire (open+close). */
 </script>
 
 </body>
