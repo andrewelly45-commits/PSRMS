@@ -1320,7 +1320,6 @@ include '../includes/topbar.php';
 
 <div class="toast-wrap" id="toastWrap"></div>
 
-
 <script>
 /* ============ TOASTS ============ */
 function showToast(msg, type = 'success') {
@@ -1542,33 +1541,11 @@ document.getElementById('confirmDeleteBtn').addEventListener('click', async func
     }
 });
 
-/* ============ MOBILE SIDEBAR ============ */
-const hamburgerBtn   = document.getElementById('appHamburgerBtn');
-const sidebarOverlay = document.getElementById('sidebarOverlay');
-
-function openSidebar() {
-    document.body.classList.add('no-scroll', 'sidebar-mobile-open');
-    if (sidebarOverlay) sidebarOverlay.classList.add('open');
-    const s = document.querySelector('.sa-sidebar');
-    if (s) s.classList.add('open');
-    if (hamburgerBtn) hamburgerBtn.classList.add('active');
-}
-function closeSidebar() {
-    document.body.classList.remove('sidebar-mobile-open');
-    if (sidebarOverlay) sidebarOverlay.classList.remove('open');
-    const s = document.querySelector('.sa-sidebar');
-    if (s) s.classList.remove('open');
-    if (hamburgerBtn) hamburgerBtn.classList.remove('active');
-    if (!document.querySelector('.modal-backdrop.open')) {
-        document.body.classList.remove('no-scroll');
-    }
-}
-if (hamburgerBtn) hamburgerBtn.addEventListener('click', () => {
-    if (document.body.classList.contains('sidebar-mobile-open')) closeSidebar();
-    else openSidebar();
-});
-if (sidebarOverlay) sidebarOverlay.addEventListener('click', closeSidebar);
-window.addEventListener('resize', () => { if (window.innerWidth > 900) closeSidebar(); });
+/* =========================================================================
+   MOBILE SIDEBAR — handled by includes/topbar.php
+   (Removed the duplicate listener here — it was fighting with the topbar's
+   handler and causing the drawer to open + close on a single tap.)
+   ========================================================================= */
 </script>
 
 </body>

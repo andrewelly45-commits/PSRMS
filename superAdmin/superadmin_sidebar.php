@@ -13,7 +13,7 @@ function sa_active(string ...$files): string {
 ?>
 <style>
     /* =========================================================
-       SUPER ADMIN SIDEBAR
+       SUPER ADMIN SIDEBAR — RESPONSIVE
     ========================================================= */
     .sa-sidebar {
         position: fixed;
@@ -154,7 +154,7 @@ function sa_active(string ...$files): string {
         margin: 12px 6px;
     }
 
-    /* Logout at bottom */
+    /* Logout */
     .sa-nav a.sa-logout {
         color: #f3b3b3;
     }
@@ -164,15 +164,94 @@ function sa_active(string ...$files): string {
         color: #ffdada;
     }
 
-    /* Mobile drawer behaviour */
+    /* =========================================================
+       MOBILE DRAWER
+    ========================================================= */
     @media (max-width: 800px) {
+
         .sa-sidebar {
             transform: translateX(-100%);
-            width: 270px;
+            width: 280px;
+            max-width: 85vw;
+
+            /* Safe-area insets for notched phones */
+            padding-top: env(safe-area-inset-top);
+            padding-bottom: env(safe-area-inset-bottom);
+            padding-left: env(safe-area-inset-left);
         }
+
         .sa-sidebar.open {
             transform: translateX(0);
-            box-shadow: 0 0 40px rgba(0,0,0,.4);
+            box-shadow: 6px 0 40px rgba(0,0,0,.5);
+        }
+
+        .sa-brand {
+            padding: 16px 18px 18px;
+        }
+
+        .sa-brand-logo {
+            width: 34px;
+            height: 34px;
+            font-size: 15px;
+        }
+
+        .sa-brand-title { font-size: 13px; }
+        .sa-brand-sub   { font-size: 10px; }
+
+        .sa-nav {
+            padding: 10px 10px 30px;
+        }
+
+        .sa-nav a {
+            padding: 13px 14px;
+            font-size: 13.5px;
+            gap: 14px;
+            margin-bottom: 2px;
+            /* Bigger tap target on mobile */
+            min-height: 48px;
+        }
+
+        .sa-nav a i {
+            font-size: 15px;
+            width: 20px;
+        }
+
+        .sa-section-label {
+            padding: 12px 12px 6px;
+            font-size: 9.5px;
+        }
+    }
+
+    /* Extra small phones */
+    @media (max-width: 400px) {
+        .sa-sidebar {
+            width: 260px;
+        }
+        .sa-brand { padding: 14px 16px 16px; }
+        .sa-nav a {
+            padding: 12px 12px;
+            font-size: 13px;
+        }
+    }
+
+    /* Landscape phones — reduce vertical padding */
+    @media (max-height: 500px) and (max-width: 900px) {
+        .sa-brand { padding: 12px 16px 14px; }
+        .sa-brand-logo { width: 32px; height: 32px; font-size: 14px; }
+        .sa-nav { padding: 8px 10px 20px; }
+        .sa-nav a {
+            padding: 10px 12px;
+            min-height: 42px;
+        }
+        .sa-section-label {
+            padding: 8px 12px 4px;
+        }
+    }
+
+    /* Reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+        .sa-sidebar {
+            transition: none;
         }
     }
 </style>
@@ -254,3 +333,36 @@ function sa_active(string ...$files): string {
 
     </nav>
 </aside>
+
+<script>
+/* =========================================================================
+   SIDEBAR — AUTO-CLOSE ON LINK TAP (mobile only)
+   The drawer itself is opened/closed by includes/topbar.php
+   ========================================================================= */
+(function () {
+    "use strict";
+
+    const sidebar = document.getElementById('saSidebar');
+    if (!sidebar) return;
+
+    /* When a nav link is tapped on mobile, close the drawer so the
+       next page loads without the overlay stuck open. */
+    sidebar.querySelectorAll('.sa-nav a').forEach(link => {
+        link.addEventListener('click', () => {
+            if (window.innerWidth <= 800) {
+                /* Let the navigation proceed, but remove the open state
+                   so the transition starts before the page unloads. */
+                sidebar.classList.remove('open');
+
+                const overlay = document.getElementById('sidebarOverlay');
+                if (overlay) overlay.classList.remove('open');
+
+                document.body.classList.remove(
+                    'sidebar-mobile-open',
+                    'no-scroll'
+                );
+            }
+        });
+    });
+})();
+</script>

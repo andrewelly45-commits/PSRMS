@@ -95,7 +95,7 @@ if (tableExists($conn, 'subjects')) {
 
 
 /* =========================================================================
-   RECENT USERS (latest 8)
+   RECENT USERS
    ========================================================================= */
 
 $recent_users = [];
@@ -118,9 +118,9 @@ if ($r) {
    ========================================================================= */
 
 $role_breakdown = [
-    ['label' => 'Admins',       'count' => $stats['admins'],   'icon' => 'fa-user-tie',     'color' => 'blue'],
-    ['label' => 'Teachers',     'count' => $stats['teachers'], 'icon' => 'fa-chalkboard-user','color' => 'green'],
-    ['label' => 'Parents',      'count' => $stats['parents'],  'icon' => 'fa-user-group',   'color' => 'orange'],
+    ['label' => 'Admins',   'count' => $stats['admins'],   'icon' => 'fa-user-tie',       'color' => 'blue'],
+    ['label' => 'Teachers', 'count' => $stats['teachers'], 'icon' => 'fa-chalkboard-user', 'color' => 'green'],
+    ['label' => 'Parents',  'count' => $stats['parents'],  'icon' => 'fa-user-group',     'color' => 'orange'],
 ];
 
 ?>
@@ -227,9 +227,10 @@ $role_breakdown = [
             padding: 6px 12px;
             border-radius: 20px;
             box-shadow: 0 4px 12px rgba(201,162,39,.25);
+            white-space: nowrap;
         }
 
-        /* STATS GRID */
+        /* STATS */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
@@ -270,7 +271,6 @@ $role_breakdown = [
         .stat-icon.green  { background: var(--green-bg);   color: var(--green); }
         .stat-icon.orange { background: var(--orange-bg);  color: var(--orange); }
         .stat-icon.purple { background: var(--purple-bg);  color: var(--purple); }
-        .stat-icon.red    { background: var(--red-bg);     color: var(--red); }
 
         .stat-body { min-width: 0; }
 
@@ -304,7 +304,7 @@ $role_breakdown = [
             margin-bottom: 20px;
         }
 
-        /* CARD */
+        /* PANEL */
         .panel {
             background: var(--white);
             border: 1px solid var(--border);
@@ -371,6 +371,7 @@ $role_breakdown = [
             font-size: 12.5px;
             font-weight: 700;
             transition: .15s ease;
+            -webkit-tap-highlight-color: transparent;
         }
 
         .action-tile:hover {
@@ -397,7 +398,7 @@ $role_breakdown = [
         .action-icon.green  { background: var(--green-bg); color: var(--green); }
         .action-icon.orange { background: var(--orange-bg); color: var(--orange); }
 
-        /* RECENT USERS LIST */
+        /* RECENT USERS */
         .user-list { padding: 0; }
 
         .user-row {
@@ -425,9 +426,7 @@ $role_breakdown = [
             overflow: hidden;
         }
 
-        .user-avatar img {
-            width: 100%; height: 100%; object-fit: cover;
-        }
+        .user-avatar img { width: 100%; height: 100%; object-fit: cover; }
 
         .user-body { flex: 1; min-width: 0; }
 
@@ -509,12 +508,25 @@ $role_breakdown = [
             font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
         }
 
-        /* RESPONSIVE */
+        /* EMPTY */
+        .empty-inline {
+            padding: 40px 20px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 12.5px;
+        }
+
+        /* =========================================================
+           RESPONSIVE — TABLET (≤1100px)
+        ========================================================= */
         @media (max-width: 1100px) {
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
             .grid-2col  { grid-template-columns: 1fr; }
         }
 
+        /* =========================================================
+           RESPONSIVE — MOBILE (≤800px)
+        ========================================================= */
         @media (max-width: 800px) {
 
             .main-content {
@@ -538,10 +550,11 @@ $role_breakdown = [
             .super-badge { align-self: flex-start; }
 
             .stats-grid { gap: 10px; }
-            .stat-card { padding: 12px; gap: 10px; }
-            .stat-icon { width: 36px; height: 36px; font-size: 14px; }
+            .stat-card  { padding: 12px; gap: 10px; }
+            .stat-icon  { width: 36px; height: 36px; font-size: 14px; }
             .stat-card .value { font-size: 17px; }
             .stat-card .label { font-size: 9px; }
+            .stat-card .sub   { font-size: 10px; }
 
             .actions-grid {
                 grid-template-columns: 1fr;
@@ -556,6 +569,9 @@ $role_breakdown = [
             .breakdown-row { padding: 12px 16px; }
         }
 
+        /* =========================================================
+           RESPONSIVE — SMALL MOBILE (≤550px)
+        ========================================================= */
         @media (max-width: 550px) {
 
             .main-content { padding: calc(var(--topbar-h) + 14px) 14px 24px; }
@@ -563,6 +579,8 @@ $role_breakdown = [
             .page-title h1 { font-size: 19px; }
             .page-title h1 i { font-size: 16px; }
             .page-title p  { font-size: 11.5px; }
+
+            .super-badge { font-size: 10px; padding: 5px 10px; }
 
             .stats-grid { gap: 8px; }
             .stat-card  {
@@ -575,10 +593,24 @@ $role_breakdown = [
             .stat-card .value { font-size: 16px; }
 
             .user-avatar { width: 34px; height: 34px; font-size: 12px; }
-            .user-name { font-size: 12.5px; }
-            .user-email { font-size: 10.5px; }
+            .user-name   { font-size: 12.5px; }
+            .user-email  { font-size: 10.5px; }
+
+            .breakdown-icon { width: 34px; height: 34px; font-size: 13px; }
+            .breakdown-label { font-size: 12.5px; }
+            .breakdown-count { font-size: 15px; }
+
+            .action-tile {
+                padding: 12px;
+                font-size: 12px;
+                gap: 10px;
+            }
+            .action-icon { width: 34px; height: 34px; font-size: 14px; }
         }
 
+        /* =========================================================
+           SAFE AREA (notched phones)
+        ========================================================= */
         @media (max-width: 800px) {
             @supports (padding: max(0px)) {
                 .main-content {
@@ -589,6 +621,9 @@ $role_breakdown = [
             }
         }
 
+        /* =========================================================
+           REDUCED MOTION
+        ========================================================= */
         @media (prefers-reduced-motion: reduce) {
             * {
                 animation-duration: .01ms !important;
@@ -758,9 +793,7 @@ include '../includes/topbar.php';
 
         <?php if (empty($recent_users)): ?>
 
-            <div style="padding:40px 20px;text-align:center;color:var(--muted);font-size:12.5px;">
-                No users yet.
-            </div>
+            <div class="empty-inline">No users yet.</div>
 
         <?php else: ?>
 
@@ -799,37 +832,10 @@ include '../includes/topbar.php';
 </main>
 
 <script>
-/* MOBILE SIDEBAR */
-const hamburgerBtn   = document.getElementById('appHamburgerBtn');
-const sidebarOverlay = document.getElementById('sidebarOverlay');
-
-function openSidebar() {
-    document.body.classList.add('no-scroll', 'sidebar-mobile-open');
-    if (sidebarOverlay) sidebarOverlay.classList.add('open');
-    const s = document.querySelector('.sa-sidebar');
-    if (s) s.classList.add('open');
-    if (hamburgerBtn) hamburgerBtn.classList.add('active');
-}
-function closeSidebar() {
-    document.body.classList.remove('sidebar-mobile-open');
-    if (sidebarOverlay) sidebarOverlay.classList.remove('open');
-    const s = document.querySelector('.sa-sidebar');
-    if (s) s.classList.remove('open');
-    if (hamburgerBtn) hamburgerBtn.classList.remove('active');
-    if (!document.querySelector('.modal-backdrop.open')) {
-        document.body.classList.remove('no-scroll');
-    }
-}
-
-if (hamburgerBtn) {
-    hamburgerBtn.addEventListener('click', () => {
-        if (document.body.classList.contains('sidebar-mobile-open')) closeSidebar();
-        else openSidebar();
-    });
-}
-if (sidebarOverlay) sidebarOverlay.addEventListener('click', closeSidebar);
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSidebar(); });
-window.addEventListener('resize', () => { if (window.innerWidth > 900) closeSidebar(); });
+/* =========================================================================
+   MOBILE SIDEBAR — handled by includes/topbar.php
+   Nothing else to add here.
+   ========================================================================= */
 </script>
 
 </body>

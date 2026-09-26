@@ -1,7 +1,7 @@
 <?php
 /*
 |--------------------------------------------------------------------------
-| SHARED TOPBAR — Admin / Teacher / Parent
+| SHARED TOPBAR — Admin / Teacher / Parent / Super Admin
 |--------------------------------------------------------------------------
 | Requires:
 |   - $_SESSION['user_id']
@@ -60,9 +60,11 @@ if (trim($topbar_initials) === '') {
 }
 
 $topbar_role_label = [
-    'admin'   => 'Admin',
-    'teacher' => 'Teacher',
-    'parent'  => 'Parent',
+    'super_admin' => 'Super Admin',
+    'admin'       => 'Admin',
+    'academic'    => 'Academic',
+    'teacher'     => 'Teacher',
+    'parent'      => 'Parent',
 ][$topbar_role] ?? ucfirst($topbar_role);
 
 $topbar_subtitle = $topbar_subtitle ?? $topbar_role_label;
@@ -70,13 +72,11 @@ $topbar_subtitle = $topbar_subtitle ?? $topbar_role_label;
 
 /* =========================================================================
    SHARED PROFILE URL
-   The profile page lives at the project root: /PSRMS/profile.php
-   This resolves correctly from any folder depth (admin/, teacher/, parent/).
    ========================================================================= */
 
 $script_path = $_SERVER['PHP_SELF'] ?? '';
 
-$project_folder = 'PSRMS';                       // ← adjust if your folder differs
+$project_folder = 'PSRMS';
 $parts          = explode('/', trim($script_path, '/'));
 $root_index     = array_search($project_folder, $parts, true);
 
@@ -92,12 +92,10 @@ if ($root_index !== false) {
 
 /* =========================================================================
    PROFILE PHOTO URL
-   For avatar preview in topbar — always relative to root/uploads/users/
    ========================================================================= */
 
 $topbar_photo_url = '';
 if ($topbar_photo) {
-    // Build the same project root path used for profile_url
     if ($root_index !== false) {
         $topbar_photo_url = $project_root . '/uploads/users/' .
             htmlspecialchars($topbar_photo, ENT_QUOTES, 'UTF-8');
@@ -111,7 +109,7 @@ if ($topbar_photo) {
 <style>
     /* =========================================================
        CSS VARIABLES
-    ========================================================= */
+       ========================================================= */
     :root {
         --topbar-h: 64px;
         --topbar-sidebar-w: 250px;
@@ -629,7 +627,9 @@ if ($topbar_photo) {
 (function () {
     "use strict";
 
-    /* USER DROPDOWN */
+    /* =========================================================
+       USER DROPDOWN
+       ========================================================= */
     const userBtn  = document.getElementById('appUserBtn');
     const userMenu = document.getElementById('appUserMenu');
     const userWrap = document.getElementById('appUserMenuWrap');
@@ -656,13 +656,24 @@ if ($topbar_photo) {
         });
     }
 
-    /* MOBILE DRAWER */
+    /* =========================================================
+       MOBILE DRAWER — works for ALL role sidebars
+       ========================================================= */
     const hamburger = document.getElementById('appHamburgerBtn');
     const overlay   = document.getElementById('sidebarOverlay');
 
-    const SIDEBAR_SELECTOR =
-        '.admin-sidebar, .teacher-sidebar, ' +
-        '#adminSidebar, #sidebar, .sidebar';
+    /* Includes: admin, teacher, parent, super admin (sa-sidebar) */
+    const SIDEBAR_SELECTOR = [
+        '.admin-sidebar',
+        '.teacher-sidebar',
+        '.parent-sidebar',
+        '.sa-sidebar',
+        '#adminSidebar',
+        '#parentSidebar',
+        '#saSidebar',
+        '#sidebar',
+        '.sidebar'
+    ].join(', ');
 
     function getSidebar() {
         return document.querySelector(SIDEBAR_SELECTOR);
@@ -707,14 +718,20 @@ if ($topbar_photo) {
         overlay.addEventListener('click', closeSidebar);
     }
 
+    /* Auto-close on nav link tap (mobile only) */
     document.querySelectorAll(
-        '.sidebar .nav-item, .admin-sidebar a, .teacher-sidebar a'
+        '.sidebar .nav-item, ' +
+        '.admin-sidebar a, ' +
+        '.teacher-sidebar a, ' +
+        '.parent-sidebar a, ' +
+        '.sa-sidebar a'
     ).forEach(function (link) {
         link.addEventListener('click', function () {
             if (window.innerWidth <= 800) closeSidebar();
         });
     });
 
+    /* Auto-close when resizing to desktop */
     let resizeTimer = null;
     window.addEventListener('resize', function () {
         clearTimeout(resizeTimer);
@@ -723,6 +740,7 @@ if ($topbar_photo) {
         }, 120);
     });
 
+    /* Expose for pages that want them */
     window.openTopbarSidebar  = openSidebar;
     window.closeTopbarSidebar = closeSidebar;
 })();
